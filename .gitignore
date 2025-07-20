@@ -1,0 +1,25 @@
+# 로그 및 이미지 폴더
+logs/
+images/
+data/
+dask-worker-space/
+
+$ 환경변수 파일
+.env
+*.env
+.env.local
+
+# Poetry in-project 가상환경
+.venv/
+
+# Python 캐시
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Jupyter 노트북 체크포인트
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+data/.DS_Store
