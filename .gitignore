@@ -3,6 +3,7 @@ logs/
 images/
 data/
 dask-worker-space/
+event_logs/
 
 $ 환경변수 파일
 .env
