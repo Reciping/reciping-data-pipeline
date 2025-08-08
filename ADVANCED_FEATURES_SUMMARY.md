@@ -26,7 +26,13 @@
 - **Gold Layer 집계 파이프라인**: `gold_layer_analytics.py`
 - **Iceberg 테이블 유지보수**: `iceberg_table_maintenance.py`
 - **실시간 스트리밍 처리**: `streaming_to_iceberg.py`
-- **향상된 Iceberg 파이프라인**: `bronze_to_silver_iceberg_simple.py`
+- **S3 데이터 업로드**: `upload_to_landing_zone.py`
+
+### 4. 🗂️ 프로젝트 구조 정리 완료 ✅
+- **핵심 운영 파일**: 메인 디렉토리에 5개 핵심 파일만 보존
+- **실패한 시도들**: `archive/failed_iceberg_attempts/`로 이동
+- **이전 버전들**: `archive/old_versions/`로 이동
+- **테스트 파일들**: `archive/test_files/`로 이동
 
 ## ⚠️ 발견된 기술적 이슈들
 
