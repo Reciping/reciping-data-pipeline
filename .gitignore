@@ -5,7 +5,7 @@ data/
 dask-worker-space/
 event_logs/
 
-$ 환경변수 파일
+# 환경변수 파일
 .env
 *.env
 .env.local
@@ -21,6 +21,39 @@ __pycache__/
 # Jupyter 노트북 체크포인트
 .ipynb_checkpoints/
 
+# Spark/Hive 관련 파일
+spark-warehouse/
+derby.log
+*.log
+metastore_db/
+
+# JAR 파일 및 의존성
+s3-jars/
+*.jar
+
+# 임시 파일 및 백업
+*~
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# IDE 설정 파일
+.vscode/
+.idea/
+*.iml
+
+# Docker 관련
+.docker/
+
 # macOS
 .DS_Store
 data/.DS_Store
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# 중복 노트북 파일 (한국어 파일명)
+*복사본*.ipynb
+*원본*.ipynb

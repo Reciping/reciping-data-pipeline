@@ -13,14 +13,19 @@ services:
       - POSTGRES_PASSWORD=hivepassword
     command: postgres -c "fsync=off"
 
-  # 2. 하이브 메타스토어 서비스 (애플리케이션 서버)
+  # 2. 하이브 메타스토어 서비스 (S3 지원 포함)
   metastore:
     image: apache/hive:4.0.0
     container_name: hive_metastore
     depends_on:
       - postgres
     ports:
-      - "9083:9083" # 스파크가 접속할 포트
+      - "9083:9083"
+    volumes:
+      # Spark에서 빌드된 JAR 파일들을 Hive Metastore와 공유
+      - spark_jars:/shared-jars:ro
+    env_file:
+      - .env  # AWS 자격증명
     environment:
       - SERVICE_NAME=metastore
       - DB_TYPE=postgres
@@ -29,60 +34,46 @@ services:
       - DB_DATABASE=metastore_db
       - DB_USER=hive
       - DB_PASSWORD=hivepassword
-      - HIVE_CONF_hive_metastore_warehouse_dir=/tmp # 임시 경로, 실제 데이터는 S3에 저장
-    command: ["/opt/hive/bin/hive", "--service", "metastore"]
+      # S3 warehouse 경로 설정
+      - HIVE_CONF_hive_metastore_warehouse_dir=s3a://reciping-user-event-logs/iceberg/warehouse/
+      # S3A 설정
+      - HIVE_CONF_fs_s3a_impl=org.apache.hadoop.fs.s3a.S3AFileSystem
+      - HIVE_CONF_fs_s3a_aws_credentials_provider=org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+      - HIVE_CONF_fs_s3a_path_style_access=true
+      # JAR 파일 classpath에 추가
+      - HIVE_AUX_JARS_PATH=/shared-jars
+    command: >
+      bash -c "
+        echo '🔧 S3 JAR 파일들을 Hive Metastore에 복사 중...'
+        && cp /shared-jars/aws-java-sdk-bundle-*.jar /opt/hive/lib/ 2>/dev/null || echo 'AWS SDK 복사 실패'
+        && cp /shared-jars/hadoop-aws-*.jar /opt/hive/lib/ 2>/dev/null || echo 'Hadoop AWS 복사 실패'
+        && echo '✅ JAR 파일 복사 완료!'
+        && /entrypoint.sh
+      "
 
-  # 3. 새로 추가된 Spark 개발 환경 서비스
+  # 3. Spark 개발 환경 서비스
   spark-dev:
-    build: .  # 현재 폴더의 Dockerfile을 사용해 이미지를 빌드합니다.
+    build: .
     container_name: spark_dev_env
-    depends_on:
-      - metastore
-    user: "root"  # root 사용자로 명시적 설정
+    user: "root"
     env_file:
-      - .env  # .env 파일에서 환경 변수 자동 로드
+      - .env
     volumes:
-      # 로컬 프로젝트 폴더와 컨테이너의 /app 폴더를 동기화합니다.
-      # 로컬에서 코드를 수정하면 컨테이너 내부에 즉시 반영됩니다.
       - .:/app
-      # 로컬 PC의 AWS 자격증명 파일(~/.aws)을 컨테이너 내부 non-root 유저의
-      # 홈 디렉토리(/home/spark/.aws)로 읽기 전용(:ro) 공유합니다.
-      - ~/.aws:/root/.aws:ro  # root 사용자 홈디렉토리로 변경
-    tty: true  # 컨테이너가 바로 종료되지 않고 계속 실행 상태를 유지하도록 합니다.
-
-    # 컨테이너가 시작될 때 가장 먼저 실행할 스크립트를 지정합니다.
-    # 이 스크립트가 /home/spark 폴더의 권한 문제를 해결하는 핵심 역할을 합니다.
+      - ~/.aws:/root/.aws:ro
+      # Spark JAR 파일들을 공유 볼륨에 복사
+      - spark_jars:/shared-jars
+    tty: true
     entrypoint: ["/usr/local/bin/entrypoint.sh"]
-
-    # entrypoint.sh 스크립트가 실행된 후, 컨테이너가 종료되지 않고 계속 대기하도록
-    # 아무것도 하지 않는 명령을 전달합니다.
     command: ["tail", "-f", "/dev/null"]
-
-    # --- ✅ 이 부분을 최종적으로 적용하세요 ---
     environment:
-      # Poetry가 불필요한 가상환경을 생성하려는 시도 자체를 막습니다.
-      # 이것이 'Creating virtualenv...' 로그와 관련 권한 문제를 해결하는 가장 확실한 방법입니다.
       - POETRY_VIRTUALENVS_CREATE=false
-
-      # 만약의 경우를 대비해, Poetry 설정 파일 저장 경로를
-      # 권한이 확실한 /app 폴더 내부로 지정하는 예비 설정입니다.
       - POETRY_CONFIG_DIR=/app/.config
-      
-      # Hadoop 사용자 환경 변수 추가
       - HADOOP_USER_NAME=root
       - USER=root
       - LOGNAME=root
       - USERNAME=root
 
-  # spark-dev:
-  #   build: . # 현재 폴더의 Dockerfile을 사용해 이미지를 빌드
-  #   container_name: spark_dev_env
-  #   depends_on:
-  #     - metastore
-  #   user: "1001"
-  #   volumes:
-  #     - .:/app # 로컬 폴더와 컨테이너의 /app 폴더를 동기화
-  #     - ~/.aws:/root/.aws:ro # 로컬의 AWS 자격증명을 컨테이너에 읽기 전용으로 공유
-  #   entrypoint: ["/usr/local/bin/entrypoint.sh"]
-  #   command: ["tail", "-f", "/dev/null"]
-  #   tty: true # 컨테이너가 바로 종료되지 않도록 설정
+# Docker 볼륨 정의
+volumes:
+  spark_jars:
