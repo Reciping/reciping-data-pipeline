@@ -7,11 +7,25 @@ USER root
 
 # Python, pip, 그리고 기타 필요한 도구들을 설치합니다. 
 RUN apt-get update && \
-    apt-get install -y python3 python3-pip nano && \
+    apt-get install -y python3 python3-pip nano curl && \
     rm -r /var/lib/apt/lists/*
 
 # Poetry 설치
 RUN pip install poetry
+
+# Iceberg와 필요한 JAR 파일들을 다운로드하고 Spark 클래스패스에 추가
+RUN mkdir -p /opt/bitnami/spark/jars/iceberg && \
+    cd /opt/bitnami/spark/jars/iceberg && \
+    # Iceberg Spark Runtime
+    curl -O https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/1.4.2/iceberg-spark-runtime-3.5_2.12-1.4.2.jar && \
+    # AWS SDK for S3
+    curl -O https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar && \
+    # Hadoop AWS
+    curl -O https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar && \
+    # PostgreSQL JDBC (Hive Metastore용)
+    curl -O https://repo1.maven.org/maven2/org/postgresql/postgresql/42.5.4/postgresql-42.5.4.jar && \
+    # Iceberg JAR들을 Spark jars 디렉토리로 복사
+    cp *.jar /opt/bitnami/spark/jars/
 
 # --- 수정된 부분 ---
 # non-root 유저(1001)가 사용할 홈 디렉토리를 환경 변수로 지정합니다. 
