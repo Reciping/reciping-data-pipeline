@@ -38,20 +38,6 @@ graph TB
     D -.->|Metadata| F
     E -.->|Storage| S3[(S3 Warehouse)]
 ```
-```
-로컬 환경:
-├── bronze_to_silver_iceberg.py (ETL 스크립트)
-└── data/ (입력 데이터)
-
-Docker 환경:
-├── PostgreSQL ← Hive Metastore 메타데이터
-├── Hive Metastore ← 테이블 카탈로그
-├── Spark ← ETL 처리
-└── (네트워크를 통해) 실제 AWS S3 연결
-    └── s3://reciping-user-event-logs/
-        ├── bronze/landing-zone/events/ (입력)
-        └── iceberg/warehouse/ (Iceberg 테이블)
-```
 
 ### 1.2 현재 구축 완료 상태
 
