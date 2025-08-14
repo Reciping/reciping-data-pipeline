@@ -73,6 +73,12 @@ services:
       - USER=root
       - LOGNAME=root
       - USERNAME=root
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 6G
 
 # Docker 볼륨 정의
 volumes:

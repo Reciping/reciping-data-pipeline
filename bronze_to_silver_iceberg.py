@@ -204,23 +204,25 @@ class IcebergETLPipeline:
             ])
 
             # --- 4.2. JSON 파싱 및 타임스탬프 자료형 변환 ---
+            # Bronze timestamp는 KST로 되어 있음: "2025-07-07T08:40:12.782565795+09:00"
             df_transformed = df \
                 .withColumn("parsed_context", from_json(col("context"), context_schema)) \
                 .withColumn("parsed_properties", from_json(col("event_properties"), event_properties_schema)) \
-                .withColumn("timestamp", col("timestamp").cast(TimestampType())) \
+                .withColumn("kst_timestamp", col("timestamp").cast(TimestampType())) \
+                .withColumn("utc_timestamp", expr("kst_timestamp - INTERVAL 9 HOURS")) \
                 .withColumn("date", col("date").cast(DateType())) \
-                .drop("context", "event_properties")
+                .drop("context", "event_properties", "timestamp")
 
-            print("✅ JSON 파싱 및 타임스탬프 변환 완료.")
+            print("✅ JSON 파싱 및 KST/UTC 타임스탬프 변환 완료.")
 
             # --- 4.3. Silver Layer 저장을 위한 파티션 컬럼 생성 (KST 기준) ---
-            # 세션 시간대가 "Asia/Seoul"이므로, year(), month() 등 함수가 KST 기준으로 값을 추출합니다.
+            # kst_timestamp를 기준으로 파티션 컬럼 생성
             df_with_partitions = df_transformed \
-                .withColumn("year", year(col("timestamp"))) \
-                .withColumn("month", month(col("timestamp"))) \
-                .withColumn("day", dayofmonth(col("timestamp"))) \
-                .withColumn("hour", hour(col("timestamp"))) \
-                .withColumn("day_of_week", date_format(col("timestamp"), "E")) # 'Mon', 'Tue' 등 요일 추출
+                .withColumn("year", year(col("kst_timestamp"))) \
+                .withColumn("month", month(col("kst_timestamp"))) \
+                .withColumn("day", dayofmonth(col("kst_timestamp"))) \
+                .withColumn("hour", hour(col("kst_timestamp"))) \
+                .withColumn("day_of_week", date_format(col("kst_timestamp"), "E")) # 'Mon', 'Tue' 등 요일 추출
 
             print("✅ KST 기준 파티션 컬럼(year, month, day, hour) 생성 완료.")
 
@@ -233,8 +235,9 @@ class IcebergETLPipeline:
                 "anonymous_id", 
                 "session_id", 
                 
-                # 시간 관련 컬럼
-                col("timestamp").alias("utc_timestamp"), 
+                # 시간 관련 컬럼 (KST와 UTC 모두 포함)
+                "kst_timestamp",  # 한국 시간 (원본)
+                "utc_timestamp",  # UTC 시간 (변환됨)
                 "date",
                 
                 # KST 기준 파생 컬럼들
@@ -295,6 +298,7 @@ class IcebergETLPipeline:
                 user_id STRING,
                 anonymous_id STRING,
                 session_id STRING,
+                kst_timestamp TIMESTAMP,
                 utc_timestamp TIMESTAMP,
                 date DATE,
                 year INT,
