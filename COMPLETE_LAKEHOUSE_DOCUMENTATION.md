@@ -625,23 +625,153 @@ weekly_batch_size = 224000  # 7일 * 32,000개
 
 ---
 
-## 🔗 관련 파일들
+## � 프로젝트 파일 분류 및 정리
 
-### 핵심 파이프라인 파일
-- `bronze_to_silver_iceberg.py`: Bronze → Silver 변환 (완료)
-- `compatible_kst_fact_processor.py`: Silver → Gold KST 최적화 처리
-- `gold_layer_star_schema.py`: 원본 Gold Layer 구현 (문제 있음)
-- `ultra_batch_processor.py`: 초기 안정화 버전
+### ✅ **핵심 프로덕션 파일 (3개) - 보존**
 
-### 설정 파일
-- `docker-compose.yml`: 전체 환경 구성
-- `requirements.txt`: Python 의존성
-- `pyproject.toml`: 프로젝트 설정
+#### 1. `bronze_to_silver_iceberg.py` - Bronze → Silver 변환
+- **용도**: CSV 파일을 Iceberg Silver Layer로 변환
+- **상태**: ✅ 완료 (1,000,001개 이벤트 처리)
+- **실행**: `docker-compose exec spark-dev python bronze_to_silver_iceberg.py`
 
-### 문서
-- `COMPLETE_PROJECT_DOCUMENTATION.md`: 전체 프로젝트 문서
-- `ICEBERG_ETL_IMPLEMENTATION_SUMMARY.md`: Iceberg 구현 요약
-- `S3_DATA_LAKEHOUSE_ARCHITECTURE.md`: 아키텍처 문서
+#### 2. `compatible_kst_fact_processor.py` - Silver → Gold 변환
+- **용도**: KST 최적화된 Gold Layer Fact 테이블 생성
+- **상태**: 🔄 진행중 (161,351개 처리, 16.1% 완료)
+- **실행**: `docker-compose exec spark-dev python compatible_kst_fact_processor.py`
+
+#### 3. `upload_to_landing_zone.py` - S3 업로드
+- **용도**: 로컬 데이터를 S3 Landing Zone에 업로드
+- **상태**: ✅ 사용됨
+- **실행**: `python upload_to_landing_zone.py --input-file data/events.csv`
+
+### ❌ **제거 대상 파일 (16개 Python + 6개 Markdown)**
+
+#### Python 파일 제거 대상 (16개)
+
+**🔴 JVM 크래시 문제 파일 (1개)**
+- `gold_layer_star_schema.py` - 복잡한 JOIN으로 JVM SIGSEGV 크래시 발생
+
+**🔴 실험/테스트 버전 (10개)**
+- `ultra_batch_processor.py` - 초기 테스트 버전 (compatible 버전으로 대체됨)
+- `smart_batch_processor.py` - 실험 버전
+- `improved_batch_processor.py` - 실험 버전  
+- `kst_optimized_fact_processor.py` - compatible 버전으로 대체됨
+- `date_range_gold_processor.py` - 호환성 문제
+- `gold_layer_complete.py` - 사용하지 않음
+- `gold_layer_practical.py` - 사용하지 않음
+- `gold_layer_minimal.py` - 사용하지 않음
+- `gold_layer_safe.py` - 사용하지 않음
+- `gold_layer_analytics.py` - 사용하지 않음
+
+**🔴 빈 파일 (2개)**
+- `streaming_to_iceberg.py` - 빈 파일
+- `iceberg_table_maintenance.py` - 빈 파일
+
+**🔴 중복/대체됨 (3개)**
+- `bronze_to_silver_simple.py` - Iceberg 버전으로 대체됨
+- `bronze_to_silver_final.py` - Iceberg 버전으로 대체됨
+- `check_conversion_results.py` - 작성했지만 실행하지 않음
+
+#### Markdown 문서 제거 대상 (6개)
+
+**🔴 중복 문서들 (모두 COMPLETE_LAKEHOUSE_DOCUMENTATION.md에 통합됨)**
+- `COMPLETE_PROJECT_DOCUMENTATION.md` - 중복
+- `ICEBERG_ETL_IMPLEMENTATION_SUMMARY.md` - 중복
+- `S3_DATA_LAKEHOUSE_ARCHITECTURE.md` - 중복
+- `ADVANCED_FEATURES_SUMMARY.md` - 중복
+- `GOLD_LAYER_EXECUTION_GUIDE.md` - 중복
+- `GOLD_LAYER_METRICS_IMPLEMENTATION_GUIDE.md` - 중복
+
+### 🗂️ **보존할 설정 및 데이터 파일**
+
+**Docker 설정**
+- `docker-compose.yml` - 환경 구성
+- `Dockerfile` - 컨테이너 이미지
+- `requirements.txt` - Python 의존성
+
+**프로젝트 설정**
+- `pyproject.toml` - Python 프로젝트 설정
+- `README.md` - 프로젝트 기본 정보
+
+**데이터 및 노트북**
+- `data/` - 원시 데이터 폴더
+- `create_data.ipynb` - 데이터 생성 노트북
+- `create_log_data.ipynb` - 로그 데이터 생성
+- `read_event_logs.ipynb` - 이벤트 로그 읽기
+
+---
+
+## 🚀 Docker 실행 가이드
+
+### 환경 시작
+```bash
+# 1. Docker 환경 시작
+docker-compose up -d
+
+# 2. 컨테이너 상태 확인
+docker-compose ps
+```
+
+### 핵심 파이프라인 실행
+```bash
+# 1. Bronze → Silver 변환 (완료됨)
+docker-compose exec spark-dev python bronze_to_silver_iceberg.py
+
+# 2. Silver → Gold 변환 (KST 최적화)
+docker-compose exec spark-dev python compatible_kst_fact_processor.py
+
+# 3. S3 업로드 (필요시)
+docker-compose exec spark-dev python upload_to_landing_zone.py \
+  --input-file data/TB_RECIPE_SEARCH_241226.csv \
+  --bucket-name reciping-user-event-logs \
+  --s3-prefix bronze/landing-zone/events
+```
+
+### 데이터 확인
+```bash
+# Spark SQL 콘솔 접속
+docker-compose exec spark-dev pyspark \
+  --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.4.2 \
+  --conf spark.sql.catalog.iceberg_catalog=org.apache.iceberg.spark.SparkCatalog \
+  --conf spark.sql.catalog.iceberg_catalog.type=hive \
+  --conf spark.sql.catalog.iceberg_catalog.uri=thrift://metastore:9083
+
+# SQL 쿼리 예시
+spark.sql("SHOW TABLES IN iceberg_catalog.recipe_analytics").show()
+spark.sql("SELECT COUNT(*) FROM iceberg_catalog.recipe_analytics.user_events_silver").show()
+```
+
+### 환경 정리
+```bash
+# 컨테이너 중지
+docker-compose down
+
+# 볼륨까지 삭제 (주의: 데이터 손실)
+docker-compose down -v
+```
+
+---
+
+## 📊 정리 효과
+
+### 제거되는 파일
+- **Python 파일**: 19개 → 3개 (**84% 감소**)
+- **Markdown 문서**: 8개 → 2개 (**75% 감소**)
+- **전체 용량**: 약 **90% 감소**
+- **유지보수성**: 핵심 파일만 관리
+
+### 남는 핵심 구조
+```
+reciping-data-pipeline/
+├── 🐍 bronze_to_silver_iceberg.py      # Bronze → Silver
+├── 🐍 compatible_kst_fact_processor.py # Silver → Gold  
+├── 🐍 upload_to_landing_zone.py        # S3 업로드
+├── 📄 COMPLETE_LAKEHOUSE_DOCUMENTATION.md # 완전 가이드
+├── 📄 README.md                        # 프로젝트 정보
+├── 🐳 docker-compose.yml               # Docker 환경
+├── 📊 data/                            # 원시 데이터
+└── 📔 *.ipynb                         # Jupyter 노트북
+```
 
 ---
 
