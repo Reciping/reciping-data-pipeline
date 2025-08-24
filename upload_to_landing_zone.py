@@ -12,10 +12,10 @@ def upload_file_to_s3(input_file_path, bucket_name, s3_prefix):
         print(f"오류: 파일을 찾을 수 없습니다 - {input_file_path}")
         return
 
-    # 파일 이름에 업로드 시각을 추가하여 중복을 방지합니다.
-    timestamp_str = datetime.now().strftime("%Y%m%d%H%M%S")
+    # 파일 이름을 그대로 사용 (타임스탬프 없이)
+    # 프로덕션에서는 타임스탬프 추가 권장: timestamp_str = datetime.now().strftime("%Y%m%d%H%M%S")
     original_filename = os.path.basename(input_file_path)
-    s3_key = f"{s3_prefix}/{timestamp_str}_{original_filename}"
+    s3_key = f"{s3_prefix}/{original_filename}"
 
     print(f"'{input_file_path}' 파일을 S3에 업로드합니다...")
     print(f"대상 경로: s3://{bucket_name}/{s3_key}")

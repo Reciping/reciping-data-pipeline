@@ -568,7 +568,7 @@ docker-compose up -d
 docker-compose exec spark-dev python bronze_to_silver_iceberg.py
 
 # 3. Gold Layer 처리 (KST 최적화)
-docker-compose exec spark-dev python compatible_kst_fact_processor.py
+docker-compose exec spark-dev python silver_to_gold_processor.py
 ```
 
 ### 📊 모니터링
@@ -634,10 +634,10 @@ weekly_batch_size = 224000  # 7일 * 32,000개
 - **상태**: ✅ 완료 (1,000,001개 이벤트 처리)
 - **실행**: `docker-compose exec spark-dev python bronze_to_silver_iceberg.py`
 
-#### 2. `compatible_kst_fact_processor.py` - Silver → Gold 변환
+#### 2. `silver_to_gold_processor.py` - Silver → Gold 변환
 - **용도**: KST 최적화된 Gold Layer Fact 테이블 생성
 - **상태**: 🔄 진행중 (161,351개 처리, 16.1% 완료)
-- **실행**: `docker-compose exec spark-dev python compatible_kst_fact_processor.py`
+- **실행**: `docker-compose exec spark-dev python silver_to_gold_processor.py`
 
 #### 3. `upload_to_landing_zone.py` - S3 업로드
 - **용도**: 로컬 데이터를 S3 Landing Zone에 업로드
@@ -718,11 +718,11 @@ docker-compose ps
 docker-compose exec spark-dev python bronze_to_silver_iceberg.py
 
 # 2. Silver → Gold 변환 (KST 최적화)
-docker-compose exec spark-dev python compatible_kst_fact_processor.py
+docker-compose exec spark-dev python silver_to_gold_processor.py
 
 # 3. S3 업로드 (필요시)
 docker-compose exec spark-dev python upload_to_landing_zone.py \
-  --input-file data/TB_RECIPE_SEARCH_241226.csv \
+  --input-file data/sample_100_merged.jsonl \
   --bucket-name reciping-user-event-logs \
   --s3-prefix bronze/landing-zone/events
 ```
@@ -764,7 +764,7 @@ docker-compose down -v
 ```
 reciping-data-pipeline/
 ├── 🐍 bronze_to_silver_iceberg.py      # Bronze → Silver
-├── 🐍 compatible_kst_fact_processor.py # Silver → Gold  
+├── 🐍 silver_to_gold_processor.py # Silver → Gold  
 ├── 🐍 upload_to_landing_zone.py        # S3 업로드
 ├── 📄 COMPLETE_LAKEHOUSE_DOCUMENTATION.md # 완전 가이드
 ├── 📄 README.md                        # 프로젝트 정보
