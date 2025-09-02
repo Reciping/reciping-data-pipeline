@@ -29,16 +29,14 @@ class CompatibleKSTFactProcessor:
         print("🔧 메모리 안전 SparkSession 생성...")
         
         self.spark = SparkSession.builder \
-            .appName("CompatibleKSTFact") \
+            .appName("CompatibleKSTFact_SilverToGold") \
             .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
             .config("spark.sql.catalog.iceberg_catalog", "org.apache.iceberg.spark.SparkCatalog") \
             .config("spark.sql.catalog.iceberg_catalog.type", "hive") \
-            .config("spark.sql.catalog.iceberg_catalog.uri", "thrift://metastore:9083") \
+            .config("spark.sql.catalog.iceberg_catalog.uri", "thrift://10.0.11.86:9083") \
             .config("spark.sql.catalog.iceberg_catalog.warehouse", "s3a://reciping-user-event-logs/iceberg/warehouse/") \
-            .config("spark.driver.memory", "1g") \
-            .config("spark.executor.memory", "1g") \
-            .config("spark.sql.shuffle.partitions", "20") \
-            .config("spark.sql.adaptive.enabled", "false") \
+            .config("spark.hadoop.fs.s3a.endpoint", "s3.ap-northeast-2.amazonaws.com") \
+            .config("spark.hadoop.fs.s3a.aws.credentials.provider", "com.amazonaws.auth.InstanceProfileCredentialsProvider") \
             .getOrCreate()
             
         self.spark.sparkContext.setLogLevel("WARN")

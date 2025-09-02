@@ -33,7 +33,7 @@ if __name__ == '__main__':
     parser.add_argument("--input-file", required=True, help="입력 이벤트 로그 파일 경로 (.jsonl)")
     parser.add_argument("--bucket-name", default="reciping-user-event-logs", help="업로드할 S3 버킷 이름")
     # 랜딩 존 경로를 명확히 지정
-    parser.add_argument("--s3-prefix", default="bronze/landing-zone/events", help="S3 내 랜딩 존 경로")
+    parser.add_argument("--s3-prefix", default="bronze/landing-zone/events/test-sample", help="S3 내 랜딩 존 경로")
 
     args = parser.parse_args()
     upload_file_to_s3(args.input_file, args.bucket_name, args.s3_prefix)
