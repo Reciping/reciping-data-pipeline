@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-🧊 Staging to Bronze Iceberg ETL Pipeline (Airflow-triggered, Flexible Time Parsing)
-====================================================================================
-S3 Staging Area의 Raw JSONL 파일들을 Bronze Iceberg 테이블로 안정적으로 수집합니다.
-Airflow로부터 실행 시간(execution_ts)을 인자로 받아 해당 시간대의 파일만 처리하며,
-자동 스케줄(ISO 형식)과 수동 테스트(간편 형식) 시간을 모두 지원합니다.
+🧊 Staging to Bronze Iceberg ETL Pipeline (Unified: Bulk & Incremental)
+=========================================================================
+S3 Staging Area의 Raw JSONL 파일들을 Bronze Iceberg 테이블로 수집합니다.
+실행 시점에 전달받는 인자에 따라 벌크 모드 또는 증분 모드로 동작합니다.
 """
 import logging
 import argparse
 from datetime import datetime
 import pytz
-from dateutil.parser import isoparse  # 상단으로 이동
+from dateutil.parser import isoparse
+from typing import Optional
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import input_file_name, current_timestamp, to_date, lit
@@ -20,28 +20,27 @@ logger = logging.getLogger(__name__)
 
 class StagingToBronzeETL:
     def __init__(self, test_mode: bool = True):
+        # ... (__init__ 메소드는 이전 답변의 최종본과 동일) ...
         self.spark = None
         self.catalog_name = "iceberg_catalog"
-        self.hive_metastore_uri = "thrift://10.0.11.86:9083" # 자신의 Hive Metastore URI로 변경
+        self.hive_metastore_uri = "thrift://10.0.11.86:9083" 
 
         if test_mode:
             self.database_name = "recipe_analytics_test"
             self.s3_warehouse_path = "s3a://reciping-user-event-logs/iceberg/test_warehouse/"
-            self.s3_staging_area = "s3a://reciping-user-event-logs/bronze/landing-zone/events/staging-area/"
+            # self.s3_staging_area_bulk = "s3a://reciping-user-event-logs/bronze/landing-zone/events/event_logs_3m/"
+            self.s3_staging_area_bulk = "s3a://reciping-user-event-logs/bronze/landing-zone/events/event_logs_1m/"
+            self.s3_staging_area_incremental = "s3a://reciping-user-event-logs/bronze/landing-zone/events/staging-area/"
             self.table_suffix = "_test"
         else:
             self.database_name = "recipe_analytics"
             self.s3_warehouse_path = "s3a://reciping-user-event-logs/iceberg/warehouse/"
-            self.s3_staging_area = "s3a://reciping-user-event-logs/bronze/landing-zone/events/staging-area/"
+            self.s3_staging_area_bulk = "s3a://reciping-user-event-logs/bronze/landing-zone/events/event_logs_1m/"
+            self.s3_staging_area_incremental = "s3a://reciping-user-event-logs/bronze/landing-zone/events/staging-area/"
             self.table_suffix = ""
 
-        # --- 변경점 1: 테이블 전체 이름을 변수로 관리하지 않고, 각 부분만 관리 ---
         self.bronze_table_simple_name = f"bronze_events_iceberg{self.table_suffix}"
-        
-        print(f"카탈로그: {self.catalog_name}")
-        print(f"데이터베이스: {self.database_name}")
-        print(f"Staging 경로: {self.s3_staging_area}")
-        print(f"Bronze 테이블: {self.bronze_table_simple_name}")
+
 
     def create_spark_session(self):
         print("SparkSession 생성 중...")
@@ -78,38 +77,46 @@ class StagingToBronzeETL:
         """
         self.spark.sql(create_table_sql)
         print("Bronze Iceberg 테이블 준비 완료")
+        
 
-    def run_pipeline(self, execution_ts: str):
+    def run_pipeline(self, execution_ts: Optional[str] = None, input_file_name: Optional[str] = None, target_date: Optional[str] = None):
+        """
+        인자에 따라 벌크 또는 증분 모드로 ETL 파이프라인을 실행합니다.
+        """
         try:
-            print(f"Staging to Bronze ETL 파이프라인 시작 (입력된 시간: {execution_ts})")
-            
             self.create_spark_session()
             self.create_bronze_table_if_not_exists()
 
-            # --- 이 부분이 최종 수정된 시간 파싱 로직입니다 ---
-            kst_tz = pytz.timezone('Asia/Seoul')
-            kst_dt = None
-            
-            # 1. 수동 실행을 위한 간편 형식 ('YYYY-MM-DD HH:MM')으로 먼저 파싱 시도
-            try:
-                dt_obj = datetime.strptime(execution_ts, '%Y-%m-%d %H:%M')
-                kst_dt = kst_tz.localize(dt_obj)
-                print(f"입력값을 간편 형식(KST)으로 인식: {kst_dt}")
-            except ValueError:
-                # 2. 간편 형식 실패 시, 자동 스케줄을 위한 ISO 형식으로 파싱 시도
-                print("간편 형식 파싱 실패. ISO 형식(UTC)으로 재시도합니다.")
-                utc_dt = isoparse(execution_ts)
-                kst_dt = utc_dt.astimezone(kst_tz)
-                print(f"입력값을 ISO 형식으로 인식 후 KST로 변환: {kst_dt}")
+            specific_file_path = ""
+            target_date_str = ""
 
-            if kst_dt is None:
-                raise ValueError(f"지원하지 않는 시간 형식입니다: {execution_ts}")
-            # --- 로직 수정 끝 ---
-
-            # KST 기준 시간에 맞는 파일명 동적 생성
-            target_filename = f"events_{kst_dt.strftime('%Y%m%d%H%M')}.jsonl"
-            specific_file_path = f"{self.s3_staging_area}{target_filename}"
+            # --- [핵심] 인자에 따라 분기 처리 ---
+            # 경로 1: 벌크 처리 모드
+            if input_file_name and target_date:
+                print(f"벌크 처리 모드로 실행 (입력 파일: {input_file_name}, 파티션 날짜: {target_date})")
+                specific_file_path = f"{self.s3_staging_area_bulk}{input_file_name}"
+                target_date_str = target_date
             
+            # 경로 2: 증분 처리 모드
+            elif execution_ts:
+                print(f"증분 처리 모드로 실행 (입력된 시간: {execution_ts})")
+                kst_tz = pytz.timezone('Asia/Seoul')
+                try:
+                    dt_obj = datetime.strptime(execution_ts, '%Y-%m-%d %H:%M')
+                    kst_dt = kst_tz.localize(dt_obj)
+                except ValueError:
+                    utc_dt = isoparse(execution_ts)
+                    kst_dt = utc_dt.astimezone(kst_tz)
+                
+                target_filename = f"events_{kst_dt.strftime('%Y%m%d%H%M')}.jsonl"
+                specific_file_path = f"{self.s3_staging_area_incremental}{target_filename}"
+                target_date_str = kst_dt.strftime('%Y-%m-%d')
+            
+            # 잘못된 인자
+            else:
+                raise ValueError("실행 모드를 결정할 수 없습니다. --execution-ts 또는 --input-file-name/--target-date 인자가 필요합니다.")
+
+            # --- 공통 실행 로직 ---
             print(f"처리할 대상 파일 경로: {specific_file_path}")
             try:
                 raw_df = self.spark.read.text(specific_file_path)
@@ -120,41 +127,37 @@ class StagingToBronzeETL:
                 print(f"파일을 찾을 수 없습니다: {specific_file_path}. 작업을 건너뜁니다.")
                 return
 
-            # Bronze 스키마에 맞게 변환
-            # --- 변경점 시작 ---
-            # 파티션 날짜를 현재 시간이 아닌, 처리 대상 시간(kst_dt) 기준으로 생성
-            target_date_str = kst_dt.strftime('%Y-%m-%d')
-            
             bronze_df = raw_df.withColumnRenamed("value", "raw_event_string") \
-                .withColumn("source_file", input_file_name()) \
+                .withColumn("source_file", lit(specific_file_path)) \
                 .withColumn("ingestion_timestamp", current_timestamp()) \
-                .withColumn("ingestion_date", to_date(lit(target_date_str))) # <-- 이 부분이 핵심입니다.
-            # --- 변경점 끝 ---
+                .withColumn("ingestion_date", to_date(lit(target_date_str)))
             
-            # Bronze Iceberg 테이블에 데이터 추가
             print(f"Bronze Iceberg 테이블의 '{target_date_str}' 파티션에 데이터 저장...")
             bronze_df.writeTo(self.bronze_table_simple_name).append()
-            
             print("ETL 파이프라인 성공적으로 완료")
-            
+
         except Exception as e:
             logger.error("파이프라인 실패", exc_info=True)
             raise
         finally:
             if self.spark:
-                print("SparkSession 종료")
                 self.spark.stop()
 
 def main():
-    # ... (이전과 동일한 main 함수) ...
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--execution-ts", required=True, help="Airflow execution timestamp (ISO 8601 or 'YYYY-MM-DD HH:MM')")
-    parser.add_argument("--test-mode", type=lambda x: (str(x).lower() == 'true'), default=True, help="Run in test mode (true/false)")
+    parser = argparse.ArgumentParser(description="Unified Staging to Bronze ETL Job (Bulk or Incremental)")
+    # 두 모드의 인자를 모두 받되, 필수는 아니도록 설정
+    parser.add_argument("--execution-ts", required=False, help="For incremental runs (ISO 8601 or 'YYYY-MM-DD HH:MM')")
+    parser.add_argument("--input-file-name", required=False, help="For bulk runs: The name of the file in S3 staging")
+    parser.add_argument("--target-date", required=False, help="For bulk runs: The logical date for the data batch (YYYY-MM-DD)")
+    parser.add_argument("--test-mode", type=lambda x: (str(x).lower() == 'true'), default=True)
     args = parser.parse_args()
 
     pipeline = StagingToBronzeETL(test_mode=args.test_mode)
-    pipeline.run_pipeline(execution_ts=args.execution_ts)
-
+    pipeline.run_pipeline(
+        execution_ts=args.execution_ts, 
+        input_file_name=args.input_file_name, 
+        target_date=args.target_date
+    )
 
 if __name__ == "__main__":
     main()

@@ -196,26 +196,44 @@ class BronzeToSilverETL:
         print("데이터 변환 완료")
         return df_final
     
-    def run_pipeline(self, execution_ts: str):
-        """메인 파이프라인 실행"""
+    def run_pipeline(self, execution_ts: Optional[str] = None, target_date: Optional[str] = None):
+        """인자에 따라 증분 또는 벌크 모드로 Bronze to Silver ETL을 실행합니다."""
         try:
             print("Bronze to Silver ETL 파이프라인 시작")
             
             self.create_spark_session()
             self.create_silver_table_if_not_exists()
 
-            # 1. Bronze 테이블에서 신규 데이터 읽기
-            new_bronze_data = self.read_new_data_from_bronze(execution_ts)
-            
-            if new_bronze_data:
-                # 2. 데이터 변환
-                silver_data = self.transform_bronze_to_silver(new_bronze_data)
-                
-                # 3. Silver Iceberg 테이블에 저장
-                print(f"Silver 테이블에 데이터 저장: {self.silver_table_name}")
-                silver_data.writeTo(self.silver_table_name).append()
-                print("Silver 테이블 저장 완료")
+            # --- [핵심] 인자에 따라 처리할 날짜(target_date_str) 결정 ---
+            target_date_str = ""
+            if target_date: # 벌크 모드
+                print(f"벌크 모드로 실행 (대상 날짜: {target_date})")
+                target_date_str = target_date
+            elif execution_ts: # 증분 모드
+                print(f"증분 모드로 실행 (입력 시간: {execution_ts})")
+                kst_tz = pytz.timezone('Asia/Seoul')
+                try:
+                    dt_obj = datetime.strptime(execution_ts, '%Y-%m-%d %H:%M')
+                    kst_dt = kst_tz.localize(dt_obj)
+                except ValueError:
+                    utc_dt = isoparse(execution_ts)
+                    kst_dt = utc_dt.astimezone(kst_tz)
+                target_date_str = kst_dt.strftime('%Y-%m-%d')
+            else:
+                raise ValueError("실행 날짜를 결정할 수 없습니다. --execution-ts 또는 --target-date 인자가 필요합니다.")
 
+            # --- 이후 로직은 target_date_str을 사용하여 동일하게 진행 ---
+            print(f"처리할 파티션 날짜: {target_date_str}")
+            bronze_df = self.spark.read.table(self.bronze_table_name).where(f"ingestion_date = '{target_date_str}'")
+            
+            if bronze_df.rdd.isEmpty():
+                print("처리할 신규 데이터가 없습니다. 파이프라인을 종료합니다.")
+                return
+            
+            # ... (데이터 변환 및 저장 로직은 기존과 동일) ...
+            silver_data = self.transform_bronze_to_silver(bronze_df)
+            silver_data.writeTo(self.silver_table_name).append()
+            
             print("ETL 파이프라인 성공적으로 완료")
             
         except Exception as e:
@@ -226,13 +244,15 @@ class BronzeToSilverETL:
                 self.spark.stop()
 
 def main():
-    parser = argparse.ArgumentParser(description="Bronze Iceberg to Silver Iceberg ETL Job")
-    parser.add_argument("--execution-ts", required=True, help="Airflow execution timestamp (ISO or 'YYYY-MM-DD HH:MM')")
-    parser.add_argument("--test-mode", type=lambda x: (str(x).lower() == 'true'), default=True, help="Run in test mode (true/false)")
+    parser = argparse.ArgumentParser(description="Unified Bronze to Silver ETL Job")
+    # 두 인자 모두 받되, 필수는 아니도록 설정
+    parser.add_argument("--execution-ts", required=False, help="For incremental runs")
+    parser.add_argument("--target-date", required=False, help="For bulk runs (YYYY-MM-DD)")
+    parser.add_argument("--test-mode", type=lambda x: (str(x).lower() == 'true'), default=True)
     args = parser.parse_args()
 
     pipeline = BronzeToSilverETL(test_mode=args.test_mode)
-    pipeline.run_pipeline(execution_ts=args.execution_ts)
+    pipeline.run_pipeline(execution_ts=args.execution_ts, target_date=args.target_date)
 
 if __name__ == "__main__":
     main()

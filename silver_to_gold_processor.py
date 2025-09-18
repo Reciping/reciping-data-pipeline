@@ -187,14 +187,33 @@ class SilverToGoldProcessor:
             if self.spark:
                 self.spark.stop()
 
+# def main():
+#     parser = argparse.ArgumentParser(description="Silver to Gold Iceberg ETL Job (Incremental)")
+#     parser.add_argument("--execution-ts", required=True, help="Airflow execution timestamp")
+#     parser.add_argument("--test-mode", type=lambda x: (str(x).lower() == 'true'), default=True, help="Run in test mode")
+#     args = parser.parse_args()
+
+#     processor = SilverToGoldProcessor(test_mode=args.test_mode)
+#     processor.run_pipeline(execution_ts=args.execution_ts)
+
 def main():
-    parser = argparse.ArgumentParser(description="Silver to Gold Iceberg ETL Job (Incremental)")
-    parser.add_argument("--execution-ts", required=True, help="Airflow execution timestamp")
-    parser.add_argument("--test-mode", type=lambda x: (str(x).lower() == 'true'), default=True, help="Run in test mode")
+    parser = argparse.ArgumentParser(description="Silver to Gold Iceberg ETL Job")
+    parser.add_argument("--execution-ts", required=False, help="Airflow execution timestamp")
+    parser.add_argument("--target-date", required=False, help="Target date for bulk processing (YYYY-MM-DD)")
+    parser.add_argument("--test-mode", type=lambda x: (str(x).lower() == 'true'), default=True)
     args = parser.parse_args()
 
+    # execution_ts가 없으면 target_date를 사용하여 생성
+    if args.execution_ts:
+        execution_ts = args.execution_ts
+    elif args.target_date:
+        # target_date를 execution_ts 형식으로 변환
+        execution_ts = f"{args.target_date} 00:00"
+    else:
+        raise ValueError("--execution-ts 또는 --target-date 중 하나는 필수입니다.")
+
     processor = SilverToGoldProcessor(test_mode=args.test_mode)
-    processor.run_pipeline(execution_ts=args.execution_ts)
+    processor.run_pipeline(execution_ts=execution_ts)
 
 if __name__ == "__main__":
     main()
