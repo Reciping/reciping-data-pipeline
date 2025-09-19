@@ -15,7 +15,7 @@ from typing import Optional  # <--- [수정 1] Optional을 import 합니다.
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     col, from_json, current_timestamp, lit,
-    year, month, dayofmonth, hour, date_format, expr, to_date
+    year, month, dayofmonth, hour, date_format, expr, to_date, coalesce
 )
 from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType,
@@ -144,32 +144,35 @@ class BronzeToSilverETL:
         # 2. raw_event_string 컬럼을 JSON으로 파싱
         parsed_df = bronze_df.withColumn("event_data", from_json(col("raw_event_string"), json_event_schema))
 
-        # 3. 파싱된 데이터를 기반으로 변환 수행 (기존 로직 활용)
+        # 3. 파싱된 데이터를 기반으로 변환 수행
         df_transformed = parsed_df \
             .withColumn("parsed_context", from_json(col("event_data.context"), context_schema)) \
             .withColumn("parsed_properties", from_json(col("event_data.event_properties"), event_properties_schema)) \
             .withColumn("kst_timestamp", col("event_data.timestamp").cast(TimestampType())) \
-            .withColumn("utc_timestamp", expr("kst_timestamp - INTERVAL 9 HOURS")) \
-            .withColumn("date", col("event_data.date").cast(DateType())) \
-            .withColumn("year", year(col("kst_timestamp"))) \
-            .withColumn("month", month(col("kst_timestamp"))) \
-            .withColumn("day", dayofmonth(col("kst_timestamp"))) \
-            .withColumn("hour", hour(col("kst_timestamp"))) \
-            .withColumn("day_of_week", date_format(col("kst_timestamp"), "E"))
-        
-        # --- 이 부분이 핵심적인 수정입니다 ---
-        # 4. 변환된 kst_timestamp를 기반으로 date 및 연/월/일/시 컬럼 생성
+            .withColumn("utc_timestamp", expr("kst_timestamp - INTERVAL 9 HOURS"))
+
+        # === 핵심 수정: 원본 date 필드 우선 사용, 없으면 kst_timestamp에서 추출 ===
         df_with_date = df_transformed \
-            .withColumn("utc_timestamp", expr("kst_timestamp - INTERVAL 9 HOURS")) \
-            .withColumn("date", to_date(col("kst_timestamp"))) \
+            .withColumn("original_date", col("event_data.date").cast(DateType())) \
+            .withColumn("computed_date", to_date(col("kst_timestamp"))) \
+            .withColumn("date", 
+                # 원본 date가 있으면 사용, 없으면 kst_timestamp에서 추출
+                coalesce(col("original_date"), col("computed_date"))
+            ) \
             .withColumn("year", year(col("kst_timestamp"))) \
             .withColumn("month", month(col("kst_timestamp"))) \
             .withColumn("day", dayofmonth(col("kst_timestamp"))) \
             .withColumn("hour", hour(col("kst_timestamp"))) \
             .withColumn("day_of_week", date_format(col("kst_timestamp"), "E"))
 
-        # 5. 최종 컬럼 선택 및 정리
-        df_final = df_with_date.select(
+        # === 추가: 날짜 불일치 데이터 필터링 ===
+        # Bronze의 ingestion_date와 추출된 date가 일치하는 데이터만 유지
+        df_filtered = df_with_date.filter(
+            col("date") == col("ingestion_date").cast(DateType())
+        )
+
+        # 5. 최종 컬럼 선택 및 정리 (기존과 동일하되 필터링 적용)
+        df_final = df_filtered.select(
             col("event_data.event_id").alias("event_id"),
             col("event_data.event_name").alias("event_name"),
             col("event_data.user_id").alias("user_id"),
@@ -187,13 +190,13 @@ class BronzeToSilverETL:
             col("parsed_properties.action").alias("prop_action"),
             col("parsed_properties.search_keyword").alias("prop_search_keyword"),
             col("parsed_properties.result_count").alias("prop_result_count"),
-            col("source_file").alias("data_source") # Bronze의 source_file을 data_source로 활용
+            col("source_file").alias("data_source")
         ) \
         .withColumn("processed_at", current_timestamp()) \
-        .withColumn("pipeline_version", lit("table_based_v1.0")) \
-        .dropDuplicates(["event_id"]) # 중복 이벤트 최종 제거
+        .withColumn("pipeline_version", lit("table_based_v1.1")) \
+        .dropDuplicates(["event_id"])
 
-        print("데이터 변환 완료")
+        print(f"데이터 변환 완료. 필터링 후 레코드 수: {df_final.count():,}")
         return df_final
     
     def run_pipeline(self, execution_ts: Optional[str] = None, target_date: Optional[str] = None):

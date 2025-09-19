@@ -102,6 +102,9 @@ class DimensionBuilder:
             
             print(f"Silver 테이블에서 데이터 읽기: {self.silver_table_name}")
             silver_df = self.spark.read.table(self.silver_table_name)
+
+            print(f"Silver 테이블의 최신 정보 새로고침: {self.silver_table_name}")
+            self.spark.catalog.refreshTable(self.silver_table_name)
             # 성능을 위해 한번 캐싱
             silver_df.cache()
 

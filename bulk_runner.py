@@ -95,7 +95,7 @@ if __name__ == "__main__":
         run_spark_job("create_dims.py", ["--test-mode", "false"])
         
         # 4. Silver -> Gold (운영 모드로 실행)
-        run_spark_job("silver_to_gold_processor.py", ["--target-date", TARGET_DATE, "--test-mode", "false"])
+        run_spark_job("silver_to_gold_processor.py", ["--test-mode", "false"])
         
         print("\n🎉 Bulk data loading completed successfully!")
         

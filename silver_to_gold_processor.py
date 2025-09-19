@@ -88,11 +88,16 @@ class SilverToGoldProcessor:
         self.spark.sql(create_table_sql)
         print("Gold Fact 테이블 준비 완료")
 
-    def transform_and_load_gold_data(self, target_date: str):
-        """Silver 및 Dimension 테이블들을 조인하여 Gold Fact 테이블로 변환 및 적재합니다."""
-        print(f"Silver to Gold 처리 시작 (대상 날짜: {target_date})")
-        
-        # 테이블 전체 이름(DB.TABLE)을 명시적으로 생성
+    
+    def transform_and_load_gold_data(self, target_date: Optional[str] = None):
+        """
+        개선된 버전: JOIN 조건을 더 유연하게 처리하여 데이터 손실을 최소화합니다.
+        """
+        if target_date:
+            print(f"Silver to Gold 증분 처리 시작 (대상 날짜: {target_date})")
+        else:
+            print("Silver to Gold 벌크 처리 시작 (전체 데이터)")
+
         full_silver_table = f"{self.silver_database}.{self.silver_table_name}"
         dim_user_table = f"dim_user{self.table_suffix}"
         dim_recipe_table = f"dim_recipe{self.table_suffix}"
@@ -100,84 +105,115 @@ class SilverToGoldProcessor:
         dim_page_table = f"dim_page{self.table_suffix}"
         
         try:
-            # 1. Silver 테이블에서 데이터 읽기 (전체 이름 사용)
-            silver_df = self.spark.read.table(full_silver_table).where(f"date = '{target_date}'")
-            
+            # Silver 데이터 읽기
+            silver_df_reader = self.spark.read.table(full_silver_table)
+            if target_date:
+                silver_df = silver_df_reader.where(f"date = '{target_date}'")
+            else:
+                silver_df = silver_df_reader
+
             silver_count = silver_df.count()
             if silver_count == 0:
-                print(f"{target_date} 날짜의 Silver 데이터가 없습니다. 작업을 건너뜁니다.")
+                print(f"처리할 Silver 데이터가 없습니다.")
                 return
 
-            print(f"{target_date} 날짜의 Silver 데이터 {silver_count}건을 Gold 테이블로 변환합니다.")
+            print(f"Silver 데이터 {silver_count:,}건을 Gold 테이블로 변환합니다.")
 
-            # 2. 필요한 모든 Dimension 테이블 읽기
+            # Dimension 테이블들 읽기
             dim_user = self.spark.read.table(dim_user_table)
             dim_recipe = self.spark.read.table(dim_recipe_table)
             dim_event = self.spark.read.table(dim_event_table)
             dim_page = self.spark.read.table(dim_page_table)
 
-            # 3. Silver 데이터와 모든 Dimension을 순차적으로 조인
-            joined_df = silver_df \
-                .join(dim_user, ["user_id", "anonymous_id", "user_segment", "cooking_style", "ab_test_group"], "left") \
-                .join(dim_recipe, silver_df.prop_recipe_id == dim_recipe.recipe_id, "left") \
-                .join(dim_event, "event_name", "left") \
-                .join(dim_page, ["page_name", "page_url"], "left")
+            # ===== 핵심 수정 부분: 더 유연한 JOIN 조건 =====
+            
+            # 1. user_id와 anonymous_id만으로 JOIN (필수 키만 사용)
+            joined_df = silver_df.alias("s") \
+                .join(
+                    dim_user.alias("du"), 
+                    (col("s.user_id") == col("du.user_id")) & 
+                    (col("s.anonymous_id") == col("du.anonymous_id")),
+                    "left"
+                ) \
+                .join(
+                    dim_recipe.alias("dr"), 
+                    col("s.prop_recipe_id") == col("dr.recipe_id"), 
+                    "left"
+                ) \
+                .join(
+                    dim_event.alias("de"), 
+                    col("s.event_name") == col("de.event_name"), 
+                    "left"
+                ) \
+                .join(
+                    dim_page.alias("dp"), 
+                    (col("s.page_name") == col("dp.page_name")) & 
+                    (col("s.page_url") == col("dp.page_url")), 
+                    "left"
+                )
 
-            # 4. 최종 Fact 테이블 형태 생성
+            # 2. 최종 Fact 테이블 생성 (컬럼명 명시적 지정)
             fact_df = joined_df.select(
-                col("event_id"),
-                coalesce(col("user_sk"), lit(0)).alias("user_dim_key"),
-                date_format(col("kst_timestamp"), "yyyyMMddHH").cast("bigint").alias("time_dim_key"),
-                coalesce(col("recipe_sk"), lit(0)).alias("recipe_dim_key"),
-                coalesce(col("page_sk"), lit(0)).alias("page_dim_key"),
-                coalesce(col("event_sk"), lit(0)).alias("event_dim_key"),
+                col("s.event_id"),
+                coalesce(col("du.user_sk"), lit(0)).alias("user_dim_key"),
+                date_format(col("s.kst_timestamp"), "yyyyMMddHH").cast("bigint").alias("time_dim_key"),
+                coalesce(col("dr.recipe_sk"), lit(0)).alias("recipe_dim_key"),
+                coalesce(col("dp.page_sk"), lit(0)).alias("page_dim_key"),
+                coalesce(col("de.event_sk"), lit(0)).alias("event_dim_key"),
                 lit(1).alias("event_count"),
-                when(col("prop_action").isNotNull() & (size(split(col("prop_action"), ":")) >= 2), 
-                     coalesce(split(col("prop_action"), ":")[1].cast("bigint"), lit(60)))
+                when(col("s.prop_action").isNotNull() & (size(split(col("s.prop_action"), ":")) >= 2), 
+                     coalesce(split(col("s.prop_action"), ":")[1].cast("bigint"), lit(60)))
                 .otherwise(60).alias("session_duration_seconds"),
                 lit(30).cast("bigint").alias("page_view_duration_seconds"),
-                when(col("event_name").isin('auth_success', 'click_bookmark', 'create_comment'), True).otherwise(False).alias("is_conversion"),
+                when(col("s.event_name").isin('auth_success', 'click_bookmark', 'create_comment'), True)
+                .otherwise(False).alias("is_conversion"),
                 lit(1.0).alias("conversion_value"),
-                when(col("event_name") == 'auth_success', 10.0).when(col("event_name") == 'create_comment', 9.0)
-                .when(col("event_name") == 'click_bookmark', 8.0).when(col("event_name") == 'click_recipe', 7.0)
-                .when(col("event_name") == 'search_recipe', 5.0).when(col("event_name") == 'view_recipe', 4.0)
-                .when(col("event_name") == 'view_page', 2.0).otherwise(1.0).alias("engagement_score"),
-                col("session_id"),
-                col("anonymous_id"),
-                col("kst_timestamp").alias("created_at"),
-                col("kst_timestamp").alias("updated_at")
+                when(col("s.event_name") == 'auth_success', 10.0)
+                .when(col("s.event_name") == 'create_comment', 9.0)
+                .when(col("s.event_name") == 'click_bookmark', 8.0)
+                .when(col("s.event_name") == 'click_recipe', 7.0)
+                .when(col("s.event_name") == 'search_recipe', 5.0)
+                .when(col("s.event_name") == 'view_recipe', 4.0)
+                .when(col("s.event_name") == 'view_page', 2.0)
+                .otherwise(1.0).alias("engagement_score"),
+                col("s.session_id"),
+                col("s.anonymous_id"),
+                col("s.kst_timestamp").alias("created_at"),
+                col("s.kst_timestamp").alias("updated_at")
             )
 
-            # 5. Gold 테이블에 데이터 추가 (Append)
-            print("Gold 테이블 적재 중...")
-            fact_df.writeTo(self.gold_table_name).append()
+            # 데이터 적재
+            if target_date:
+                print("Gold 테이블에 증분 데이터 추가(Append)...")
+                fact_df.writeTo(self.gold_table_name).append()
+            else:
+                print("Gold 테이블 전체 데이터 덮어쓰기(Overwrite)...")
+                fact_df.write.format("iceberg").mode("overwrite").saveAsTable(self.gold_table_name)
+
             print("Gold 테이블 적재 완료.")
 
         except Exception as e:
             logger.error("Gold 데이터 변환/적재 실패", exc_info=True)
             raise
 
-    def run_pipeline(self, execution_ts: str):
-        """메인 파이프라인 실행"""
+    def run_pipeline(self, target_date: Optional[str] = None):
+        """
+        메인 파이프라인을 실행합니다.
+        target_date가 있으면 증분 모드, 없으면 벌크 모드로 동작합니다.
+        """
         try:
             self.create_spark_session()
-            
-            kst_tz = pytz.timezone('Asia/Seoul')
-            try:
-                dt_obj = datetime.strptime(execution_ts, '%Y-%m-%d %H:%M')
-                kst_dt = kst_tz.localize(dt_obj)
-            except ValueError:
-                utc_dt = isoparse(execution_ts)
-                kst_dt = utc_dt.astimezone(kst_tz)
-            target_date = kst_dt.strftime('%Y-%m-%d')
-            
             self.create_gold_table_if_not_exists()
             
+            # Silver 테이블의 최신 메타데이터 정보를 불러옵니다.
+            # Airflow 등 외부에서 Silver 테이블이 업데이트된 직후 이 잡을 실행할 때 필요합니다.
             full_silver_table_name = f"{self.silver_database}.{self.silver_table_name}"
             print(f"Silver 테이블의 최신 정보 새로고침: {full_silver_table_name}")
             self.spark.catalog.refreshTable(full_silver_table_name)
             
+            # target_date 인자를 transform 함수로 그대로 전달합니다.
             self.transform_and_load_gold_data(target_date)
+            
             print("Silver to Gold ETL 파이프라인 성공적으로 완료")
             
         except Exception as e:
@@ -198,22 +234,12 @@ class SilverToGoldProcessor:
 
 def main():
     parser = argparse.ArgumentParser(description="Silver to Gold Iceberg ETL Job")
-    parser.add_argument("--execution-ts", required=False, help="Airflow execution timestamp")
-    parser.add_argument("--target-date", required=False, help="Target date for bulk processing (YYYY-MM-DD)")
+    parser.add_argument("--target-date", required=False, help="Target date for incremental processing (YYYY-MM-DD)")
     parser.add_argument("--test-mode", type=lambda x: (str(x).lower() == 'true'), default=True)
     args = parser.parse_args()
 
-    # execution_ts가 없으면 target_date를 사용하여 생성
-    if args.execution_ts:
-        execution_ts = args.execution_ts
-    elif args.target_date:
-        # target_date를 execution_ts 형식으로 변환
-        execution_ts = f"{args.target_date} 00:00"
-    else:
-        raise ValueError("--execution-ts 또는 --target-date 중 하나는 필수입니다.")
-
     processor = SilverToGoldProcessor(test_mode=args.test_mode)
-    processor.run_pipeline(execution_ts=execution_ts)
+    processor.run_pipeline(target_date=args.target_date)
 
 if __name__ == "__main__":
     main()
