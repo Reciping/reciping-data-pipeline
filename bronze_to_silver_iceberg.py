@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-🧊 Iceberg + Hive Metastore 기반 Bronze to Silver ETL Pipeline (Table-based)
-============================================================================
+🧊 Iceberg + Hive Metastore 기반 Bronze to Silver ETL Pipeline (Stateless & Idempotent)
+=======================================================================================
 Bronze Iceberg 테이블에서 신규 데이터를 읽어 Silver Iceberg 테이블로 변환/정제합니다.
-Airflow 실행 시간에 따라 처리할 데이터 파티션을 동적으로 선택합니다.
+Airflow로부터 data_interval_start를 받아 처리할 파티션을 동적으로 선택합니다.
 """
 import logging
 import argparse
 from datetime import datetime
 import pytz
 from dateutil.parser import isoparse
-from typing import Optional  # <--- [수정 1] Optional을 import 합니다.
+from typing import Optional 
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     col, from_json, current_timestamp, lit,
-    year, month, dayofmonth, hour, date_format, expr, to_date, coalesce
+    year, month, dayofmonth, hour, date_format, expr, to_date, coalesce, to_timestamp
 )
 from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType,
@@ -85,29 +85,31 @@ class BronzeToSilverETL:
         self.spark.sql(create_table_sql)
         print("Silver Iceberg 테이블 준비 완료")
 
-    def read_new_data_from_bronze(self, execution_ts: str) -> Optional[DataFrame]:  # <--- [수정 2] "DataFrame | None"을 "Optional[DataFrame]"으로 변경
-        """Bronze 테이블에서 특정 파티션의 신규 데이터를 읽어옵니다."""
-        print(f"Bronze 테이블에서 신규 데이터 읽기 시작 (기준 시간: {execution_ts})")
-        
-        kst_tz = pytz.timezone('Asia/Seoul')
-        try:
-            dt_obj = datetime.strptime(execution_ts, '%Y-%m-%d %H:%M')
-            kst_dt = kst_tz.localize(dt_obj)
-        except ValueError:
-            utc_dt = isoparse(execution_ts)
-            kst_dt = utc_dt.astimezone(kst_tz)
-        
-        target_date = kst_dt.strftime('%Y-%m-%d')
-        
-        print(f"처리할 파티션 날짜: {target_date}")
-        bronze_df = self.spark.read.table(self.bronze_table_name).where(f"ingestion_date = '{target_date}'")
+    def read_new_data_from_bronze(self, execution_ts: str = None) -> Optional[DataFrame]:
+        """수정된 버전: execution_ts가 없으면 Bronze 테이블 전체 읽기"""
+        if execution_ts is None:
+            print("Bronze 테이블에서 전체 데이터 읽기 (벌크 모드)")
+            bronze_df = self.spark.read.table(self.bronze_table_name)
+        else:
+            print(f"Bronze 테이블에서 특정 파티션 읽기: {execution_ts}")
+            # 기존 로직
+            kst_tz = pytz.timezone('Asia/Seoul')
+            try:
+                dt_obj = datetime.strptime(execution_ts, '%Y-%m-%d %H:%M')
+                kst_dt = kst_tz.localize(dt_obj)
+            except ValueError:
+                utc_dt = isoparse(execution_ts)
+                kst_dt = utc_dt.astimezone(kst_tz)
+            
+            target_date = kst_dt.strftime('%Y-%m-%d')
+            bronze_df = self.spark.read.table(self.bronze_table_name).where(f"ingestion_date = '{target_date}'")
         
         if bronze_df.rdd.isEmpty():
-            print("처리할 신규 데이터가 없습니다. 파이프라인을 종료합니다.")
+            print("처리할 데이터가 없습니다.")
             return None
             
         count = bronze_df.count()
-        print(f"총 {count:,} 건의 신규 데이터를 읽었습니다.")
+        print(f"총 {count:,} 건의 데이터를 읽었습니다.")
         return bronze_df
 
     def transform_bronze_to_silver(self, bronze_df: DataFrame) -> DataFrame:
@@ -148,31 +150,24 @@ class BronzeToSilverETL:
         df_transformed = parsed_df \
             .withColumn("parsed_context", from_json(col("event_data.context"), context_schema)) \
             .withColumn("parsed_properties", from_json(col("event_data.event_properties"), event_properties_schema)) \
-            .withColumn("kst_timestamp", col("event_data.timestamp").cast(TimestampType())) \
-            .withColumn("utc_timestamp", expr("kst_timestamp - INTERVAL 9 HOURS"))
-
-        # === 핵심 수정: 원본 date 필드 우선 사용, 없으면 kst_timestamp에서 추출 ===
-        df_with_date = df_transformed \
-            .withColumn("original_date", col("event_data.date").cast(DateType())) \
-            .withColumn("computed_date", to_date(col("kst_timestamp"))) \
+            .withColumn("raw_timestamp_str", col("event_data.timestamp")) \
+            .withColumn("kst_timestamp", 
+                # ISO 8601 형식의 timestamp를 올바르게 파싱
+                to_timestamp(col("raw_timestamp_str"), "yyyy-MM-dd'T'HH:mm:ss.SSSXXX")) \
+            .withColumn("utc_timestamp", 
+                # KST에서 UTC로 변환 (9시간 빼기)
+                expr("kst_timestamp - INTERVAL 9 HOURS")) \
             .withColumn("date", 
-                # 원본 date가 있으면 사용, 없으면 kst_timestamp에서 추출
-                coalesce(col("original_date"), col("computed_date"))
-            ) \
+                # KST 기준으로 날짜 추출 (이게 핵심!)
+                to_date(col("kst_timestamp"))) \
             .withColumn("year", year(col("kst_timestamp"))) \
             .withColumn("month", month(col("kst_timestamp"))) \
             .withColumn("day", dayofmonth(col("kst_timestamp"))) \
             .withColumn("hour", hour(col("kst_timestamp"))) \
             .withColumn("day_of_week", date_format(col("kst_timestamp"), "E"))
 
-        # === 추가: 날짜 불일치 데이터 필터링 ===
-        # Bronze의 ingestion_date와 추출된 date가 일치하는 데이터만 유지
-        df_filtered = df_with_date.filter(
-            col("date") == col("ingestion_date").cast(DateType())
-        )
-
-        # 5. 최종 컬럼 선택 및 정리 (기존과 동일하되 필터링 적용)
-        df_final = df_filtered.select(
+        # 최종 컬럼 선택
+        df_final = df_transformed.select(
             col("event_data.event_id").alias("event_id"),
             col("event_data.event_name").alias("event_name"),
             col("event_data.user_id").alias("user_id"),
@@ -193,52 +188,125 @@ class BronzeToSilverETL:
             col("source_file").alias("data_source")
         ) \
         .withColumn("processed_at", current_timestamp()) \
-        .withColumn("pipeline_version", lit("table_based_v1.1")) \
+        .withColumn("pipeline_version", lit("bulk_corrected_v1.0")) \
         .dropDuplicates(["event_id"])
 
         print(f"데이터 변환 완료. 필터링 후 레코드 수: {df_final.count():,}")
         return df_final
     
-    def run_pipeline(self, execution_ts: Optional[str] = None, target_date: Optional[str] = None):
-        """인자에 따라 증분 또는 벌크 모드로 Bronze to Silver ETL을 실행합니다."""
-        try:
-            print("Bronze to Silver ETL 파이프라인 시작")
+#     def run_pipeline(self, execution_ts: Optional[str] = None, target_date: Optional[str] = None):
+#         """인자에 따라 증분 또는 벌크 모드로 Bronze to Silver ETL을 실행합니다."""
+#         try:
+#             print("Bronze to Silver ETL 파이프라인 시작")
             
+#             self.create_spark_session()
+#             self.create_silver_table_if_not_exists()
+
+#             # === 핵심 수정: 벌크 모드 처리 추가 ===
+#             if target_date:
+#                 # 증분 모드: 특정 날짜만 처리
+#                 print(f"증분 모드로 실행 (대상 날짜: {target_date})")
+#                 bronze_df = self.spark.read.table(self.bronze_table_name).where(f"ingestion_date = '{target_date}'")
+                
+#             elif execution_ts:
+#                 # 증분 모드: Airflow에서 호출
+#                 print(f"증분 모드로 실행 (입력 시간: {execution_ts})")
+#                 kst_tz = pytz.timezone('Asia/Seoul')
+#                 try:
+#                     dt_obj = datetime.strptime(execution_ts, '%Y-%m-%d %H:%M')
+#                     kst_dt = kst_tz.localize(dt_obj)
+#                 except ValueError:
+#                     utc_dt = isoparse(execution_ts)
+#                     kst_dt = utc_dt.astimezone(kst_tz)
+#                 target_date_str = kst_dt.strftime('%Y-%m-%d')
+#                 bronze_df = self.spark.read.table(self.bronze_table_name).where(f"ingestion_date = '{target_date_str}'")
+                
+#             else:
+#                 # 벌크 모드: 전체 Bronze 데이터 처리
+#                 print("벌크 모드로 실행 (Bronze 테이블 전체 처리)")
+#                 print("주의: ingestion_date와 관계없이 모든 데이터를 실제 이벤트 날짜별로 재파티셔닝합니다.")
+#                 bronze_df = self.spark.read.table(self.bronze_table_name)
+            
+#             if bronze_df.rdd.isEmpty():
+#                 print("처리할 데이터가 없습니다. 파이프라인을 종료합니다.")
+#                 return
+            
+#             count = bronze_df.count()
+#             print(f"총 {count:,} 건의 데이터를 처리합니다.")
+            
+#             # 데이터 변환 및 저장 (실제 이벤트 날짜별로 파티셔닝됨)
+#             silver_data = self.transform_bronze_to_silver(bronze_df)
+#             silver_data.writeTo(self.silver_table_name).append()
+            
+#             print("ETL 파이프라인 성공적으로 완료")
+            
+#         except Exception as e:
+#             logger.error("파이프라인 실패", exc_info=True)
+#             raise
+#         finally:
+#             if self.spark:
+#                 self.spark.stop()
+
+# def main():
+#     parser = argparse.ArgumentParser(description="Unified Bronze to Silver ETL Job")
+#     # 두 인자 모두 받되, 필수는 아니도록 설정
+#     parser.add_argument("--execution-ts", required=False, help="For incremental runs")
+#     parser.add_argument("--target-date", required=False, help="For bulk runs (YYYY-MM-DD)")
+#     parser.add_argument("--test-mode", type=lambda x: (str(x).lower() == 'true'), default=True)
+#     args = parser.parse_args()
+
+#     pipeline = BronzeToSilverETL(test_mode=args.test_mode)
+#     pipeline.run_pipeline(execution_ts=args.execution_ts, target_date=args.target_date)
+
+
+    def run_pipeline(self, data_interval_start: Optional[str] = None, data_interval_end: Optional[str] = None):
+        """
+        [수정됨] data_interval_start를 기반으로 Bronze 테이블의 특정 파티션을 읽어 처리합니다.
+        """
+        try:
             self.create_spark_session()
             self.create_silver_table_if_not_exists()
 
-            # --- [핵심] 인자에 따라 처리할 날짜(target_date_str) 결정 ---
-            target_date_str = ""
-            if target_date: # 벌크 모드
-                print(f"벌크 모드로 실행 (대상 날짜: {target_date})")
-                target_date_str = target_date
-            elif execution_ts: # 증분 모드
-                print(f"증분 모드로 실행 (입력 시간: {execution_ts})")
-                kst_tz = pytz.timezone('Asia/Seoul')
-                try:
-                    dt_obj = datetime.strptime(execution_ts, '%Y-%m-%d %H:%M')
-                    kst_dt = kst_tz.localize(dt_obj)
-                except ValueError:
-                    utc_dt = isoparse(execution_ts)
-                    kst_dt = utc_dt.astimezone(kst_tz)
-                target_date_str = kst_dt.strftime('%Y-%m-%d')
-            else:
-                raise ValueError("실행 날짜를 결정할 수 없습니다. --execution-ts 또는 --target-date 인자가 필요합니다.")
+            if not data_interval_start:
+                raise ValueError("증분 처리를 위해 --data-interval-start 인자가 반드시 필요합니다.")
 
-            # --- 이후 로직은 target_date_str을 사용하여 동일하게 진행 ---
-            print(f"처리할 파티션 날짜: {target_date_str}")
-            bronze_df = self.spark.read.table(self.bronze_table_name).where(f"ingestion_date = '{target_date_str}'")
+            # === 증분 처리 모드: Airflow가 전달한 시간 구간을 명확히 사용 ===
+            print(f"증분 처리 모드로 실행: {data_interval_start} ~ {data_interval_end}")
             
-            if bronze_df.rdd.isEmpty():
-                print("처리할 신규 데이터가 없습니다. 파이프라인을 종료합니다.")
+            # 1. data_interval_start(UTC)를 KST 기준으로 변환하여 'YYYY-MM-DD' 날짜 획득
+            start_time_utc = isoparse(data_interval_start)
+            kst_tz = pytz.timezone('Asia/Seoul')
+            start_time_kst = start_time_utc.astimezone(kst_tz)
+            target_date_str = start_time_kst.strftime('%Y-%m-%d')
+            
+            print(f"Bronze 테이블의 처리 대상 파티션 날짜: {target_date_str}")
+            
+            # 2. Bronze 테이블에서 해당 날짜 파티션만 정확히 읽어오기
+            source_bronze_df = self.spark.read.table(self.bronze_table_name).where(
+                f"ingestion_date = '{target_date_str}'"
+            )
+            
+            if source_bronze_df.rdd.isEmpty():
+                print("처리할 Bronze 데이터가 없습니다. 작업을 종료합니다.")
                 return
+
+            # --- 공통 실행 로직 ---
+            print(f"총 {source_bronze_df.count():,} 건의 Bronze 데이터를 처리합니다.")
+            silver_data = self.transform_bronze_to_silver(source_bronze_df)
+            silver_data.createOrReplaceTempView("silver_updates")
             
-            # ... (데이터 변환 및 저장 로직은 기존과 동일) ...
-            silver_data = self.transform_bronze_to_silver(bronze_df)
-            silver_data.writeTo(self.silver_table_name).append()
-            
-            print("ETL 파이프라인 성공적으로 완료")
-            
+            # MERGE INTO는 멱등성을 보장하는 좋은 방법입니다.
+            merge_sql = f"""
+            MERGE INTO {self.silver_table_name} t
+            USING silver_updates s
+            ON t.event_id = s.event_id
+            WHEN MATCHED THEN UPDATE SET *
+            WHEN NOT MATCHED THEN INSERT *
+            """
+            print("Silver Iceberg 테이블에 MERGE 실행...")
+            self.spark.sql(merge_sql)
+            print("Bronze to Silver ETL 파이프라인 성공적으로 완료")
+                
         except Exception as e:
             logger.error("파이프라인 실패", exc_info=True)
             raise
@@ -246,16 +314,19 @@ class BronzeToSilverETL:
             if self.spark:
                 self.spark.stop()
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Unified Bronze to Silver ETL Job")
-    # 두 인자 모두 받되, 필수는 아니도록 설정
-    parser.add_argument("--execution-ts", required=False, help="For incremental runs")
-    parser.add_argument("--target-date", required=False, help="For bulk runs (YYYY-MM-DD)")
+    parser = argparse.ArgumentParser(description="Stateless Bronze to Silver ETL Job")
+    parser.add_argument("--data-interval-start", required=True)
+    parser.add_argument("--data-interval-end", required=True)
     parser.add_argument("--test-mode", type=lambda x: (str(x).lower() == 'true'), default=True)
     args = parser.parse_args()
 
     pipeline = BronzeToSilverETL(test_mode=args.test_mode)
-    pipeline.run_pipeline(execution_ts=args.execution_ts, target_date=args.target_date)
+    pipeline.run_pipeline(
+        data_interval_start=args.data_interval_start, 
+        data_interval_end=args.data_interval_end
+    )
 
 if __name__ == "__main__":
     main()

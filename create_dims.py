@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 🧊 Dimension Tables Creation Script
 ====================================
@@ -7,7 +6,11 @@ Silver 테이블 및 S3 마스터 파일을 기반으로 Gold Layer의 모든 Di
 import logging
 import argparse
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col, monotonically_increasing_id, to_date, year, month, dayofmonth, hour, date_format, lit, when, expr
+from pyspark.sql.functions import (
+    col, monotonically_increasing_id, to_date, year, month, dayofmonth, hour, 
+    date_format, lit, when, expr, row_number, desc
+)
+from pyspark.sql.window import Window
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -53,25 +56,63 @@ class DimensionBuilder:
         
         print("SparkSession 생성 및 설정 완료")
 
+    def _create_user_dimension(self, silver_df: DataFrame, table_name: str):
+        """
+        User Dimension 전용 생성 함수
+        user_id별로 하나의 surrogate key만 할당하여 DAU 계산 정확성 보장
+        """
+        print(f"User Dimension 테이블 생성/업데이트 중: {table_name}")
+        
+        # 1. user_id별로 가장 최근 정보만 유지 (SCD Type 1 방식)
+        window = Window.partitionBy("user_id").orderBy(desc("processed_at"))
+        
+        user_dim = silver_df.select(
+            "user_id", "anonymous_id", "user_segment", "cooking_style", "ab_test_group", "processed_at"
+        ).where(col("user_id").isNotNull()) \
+        .withColumn("rn", row_number().over(window)) \
+        .where(col("rn") == 1) \
+        .drop("rn", "processed_at") \
+        .distinct()  # 혹시 모를 중복 제거
+        
+        # 2. Surrogate Key 할당
+        user_dim_with_sk = user_dim.withColumn("user_sk", monotonically_increasing_id())
+        
+        # 3. 최종 컬럼 순서 정리
+        final_user_dim = user_dim_with_sk.select(
+            "user_sk", "user_id", "anonymous_id", "user_segment", "cooking_style", "ab_test_group"
+        )
+        
+        # 4. 테이블 저장
+        final_user_dim.write.format("iceberg").mode("overwrite").saveAsTable(table_name)
+        
+        user_count = final_user_dim.count()
+        print(f"{table_name} 처리 완료. 총 {user_count:,} 건")
+        
+        # 5. 검증 로그
+        unique_user_ids = final_user_dim.select("user_id").distinct().count()
+        print(f"검증: unique user_id = {unique_user_ids:,}, total records = {user_count:,}")
+        if unique_user_ids != user_count:
+            print("⚠️  경고: user_id 중복이 여전히 존재합니다!")
+        else:
+            print("✅ 검증 성공: user_id당 하나의 레코드만 존재합니다.")
+
     def _create_dimension(self, table_name: str, source_df: DataFrame, id_cols: list, surrogate_key: str):
-        """Silver 테이블 기반 Dimension 생성 헬퍼 함수"""
+        """일반 Dimension 생성 헬퍼 함수 (user 제외)"""
         print(f"Dimension 테이블 생성/업데이트 중: {table_name}")
         dim_df = source_df.select(*id_cols).where(col(id_cols[0]).isNotNull()).distinct()
         dim_df_with_sk = dim_df.withColumn(surrogate_key, monotonically_increasing_id())
         dim_df_with_sk.write.format("iceberg").mode("overwrite").saveAsTable(table_name)
         print(f"{table_name} 처리 완료. 총 {dim_df_with_sk.count():,} 건")
 
-    # --- [핵심 수정] S3의 Parquet 마스터 파일을 읽어 dim_recipe를 생성하는 함수 ---
     def _create_dim_recipe_from_master(self):
+        """S3 마스터 파일에서 레시피 Dimension 생성"""
         table_name = f"dim_recipe{self.table_suffix}"
         master_file_path = f"{self.s3_master_path}total_recipes.parquet"
         
         print(f"Dimension 테이블 생성/업데이트 중: {table_name} (Source: {master_file_path})")
 
-        # 1. S3에 있는 레시피 마스터 Parquet 파일 읽기
         recipe_master_df = self.spark.read.parquet(master_file_path)
 
-        # 2. 필요한 컬럼 선택 및 이름 변경
         dim_recipe_df = recipe_master_df.select(
             col("id").alias("recipe_id"),
             col("name").alias("recipe_name"),
@@ -83,10 +124,8 @@ class DimensionBuilder:
             col("cooking_time")
         )
 
-        # 3. 고유 식별을 위한 대리 키(Surrogate Key) 생성
         dim_recipe_with_sk = dim_recipe_df.withColumn("recipe_sk", monotonically_increasing_id())
 
-        # 4. 최종 스키마 선택 및 저장
         final_dim_df = dim_recipe_with_sk.select(
             "recipe_sk", "recipe_id", "recipe_name", "dish_type", 
             "ingredient_type", "method_type", "situation_type", "difficulty", "cooking_time"
@@ -105,21 +144,19 @@ class DimensionBuilder:
 
             print(f"Silver 테이블의 최신 정보 새로고침: {self.silver_table_name}")
             self.spark.catalog.refreshTable(self.silver_table_name)
-            # 성능을 위해 한번 캐싱
             silver_df.cache()
 
-            # --- Silver 테이블 기반 Dimension 테이블 생성 ---
-            # self._create_dimension(f"dim_user{self.table_suffix}", silver_df, ["user_id", "anonymous_id", "user_segment", "cooking_style"], "user_sk")
-            # [수정 후] ab_test_group 컬럼을 리스트에 추가합니다.
-            self._create_dimension(f"dim_user{self.table_suffix}", silver_df, ["user_id", "anonymous_id", "user_segment", "cooking_style", "ab_test_group"], "user_sk")
-            self._create_dimension(f"dim_event{self.table_suffix}", silver_df, ["event_name"], "event_sk")
+            # === 핵심 수정: User Dimension을 전용 함수로 생성 ===
+            self._create_user_dimension(silver_df, f"dim_user{self.table_suffix}")
+            
+            # 나머지 Dimension들은 기존 방식 유지
             self._create_dimension(f"dim_event{self.table_suffix}", silver_df, ["event_name"], "event_sk")
             self._create_dimension(f"dim_page{self.table_suffix}", silver_df, ["page_name", "page_url"], "page_sk")
 
-            # --- S3 마스터 파일 기반 dim_recipe 생성 ---
+            # S3 마스터 파일 기반 dim_recipe 생성
             self._create_dim_recipe_from_master()
             
-           # --- [수정] dim_time 테이블 생성 로직 ---
+            # dim_time 테이블 생성
             print(f"Dimension 테이블 생성/업데이트 중: dim_time{self.table_suffix}")
             time_df = self.spark.sql("""
                 SELECT explode(sequence(to_timestamp('2025-01-01 00:00:00'), 
@@ -127,11 +164,10 @@ class DimensionBuilder:
                                        interval 1 hour)) as ts
             """)
             
-            # 이 select 구문에 to_date(...)를 추가합니다.
             dim_time = time_df.select(
                 date_format(col("ts"), "yyyyMMddHH").cast("bigint").alias("time_dim_key"),
                 col("ts").alias("datetime_kst"),
-                to_date(col("ts")).alias("date"), # <-- 이 라인을 추가합니다.
+                to_date(col("ts")).alias("date"),
                 year(col("ts")).alias("year"),
                 month(col("ts")).alias("month"),
                 dayofmonth(col("ts")).alias("day"),
@@ -143,7 +179,7 @@ class DimensionBuilder:
             dim_time.write.format("iceberg").mode("overwrite").saveAsTable(f"dim_time{self.table_suffix}")
             print(f"dim_time{self.table_suffix} 처리 완료.")
 
-            silver_df.unpersist() # 캐시 해제
+            silver_df.unpersist()
 
         except Exception as e:
             logger.error("Dimension 테이블 생성 실패", exc_info=True)

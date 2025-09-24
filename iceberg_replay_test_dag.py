@@ -1,4 +1,4 @@
-# iceberg_live_pipeline_dag.py (10분 증분 처리 최종본)
+# iceberg_replay_test_dag.py
 from __future__ import annotations
 import pendulum
 from airflow.models.dag import DAG
@@ -7,8 +7,7 @@ from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOpe
 # Spark 스크립트들이 위치한 경로
 SPARK_SCRIPTS_DIR = "/home/ec2-user/spark_jobs"
 
-# --- [핵심] 공통 Spark 설정 ---
-# 모든 Spark 작업에 공통적으로 필요한 의존성 패키지들입니다.
+# --- 공통 Spark 설정 (기존과 동일) ---
 spark_common_packages = [
     "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.4.2",
     "org.apache.iceberg:iceberg-aws-bundle:1.4.2",
@@ -17,8 +16,16 @@ spark_common_packages = [
     "org.postgresql:postgresql:42.5.4"
 ]
 
-# 모든 Spark 작업에 공통적으로 필요한 설정입니다.
 spark_common_conf = {
+    # 1순위: Driver 메모리 확보 (SIGSEGV 해결 가능성 매우 높음)
+    "spark.driver.memory": "2g",
+
+    #  --- [핵심] JIT 컴파일러 버그 우회를 위한 옵션 추가 ---
+    "spark.driver.extraJavaOptions": "-XX:-TieredCompilation",
+    "spark.executor.extraJavaOptions": "-XX:-TieredCompilation",
+
+
+
     "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
     "spark.hadoop.fs.s3a.path.style.access": "true",
     "spark.hadoop.fs.s3a.endpoint": "s3.ap-northeast-2.amazonaws.com", 
@@ -28,30 +35,38 @@ spark_common_conf = {
 }
 
 with DAG(
-    # --- [수정 1] DAG ID 변경 ---
-    dag_id='iceberg_10min_live_pipeline_final',
+    # --- [핵심] 테스트 목적에 맞게 DAG 설정 변경 ---
+    dag_id='iceberg_replay_2_intervals_test',
     
-    # --- [수정 2] 스케줄 및 시작 시간 설정 ---
+    # 1. start_date: 테스트하고 싶은 첫 번째 구간의 시작 시간
     start_date=pendulum.datetime(2025, 9, 1, 0, 0, tz="Asia/Seoul"),
-    schedule_interval='*/15 * * * *', # <-- 15분 주기로 변경
-    catchup=False, # <-- 과거에 놓친 스케줄은 실행하지 않음
-    max_active_runs=1, # 파이프라인이 밀리지 않도록 동시 실행은 1개로 제한
+    
+    # 2. end_date: 마지막으로 실행할 구간이 끝나는 시간 (00:10~00:19 구간 실행 후 종료)
+    end_date=pendulum.datetime(2025, 9, 1, 0, 20, tz="Asia/Seoul"),
+    
+    # 3. schedule_interval: 처리할 데이터의 시간 간격
+    schedule_interval='*/10 * * * *',
+    
+    # 4. catchup: start_date부터 end_date까지 밀린 스케줄을 모두 실행
+    catchup=True,
+    
+    max_active_runs=1, # 데이터 순서 보장을 위해 동시 실행은 1개로 제한
 
-    doc_md="[Final] 15분 주기로 S3 Raw파일(Bronze)을 Silver/Gold Iceberg 테이블로 증분 처리합니다.",
-    tags=['iceberg', 'spark', 'production', '15min'],
+    doc_md="[Test] 2025-09-01의 첫 20분(10분짜리 2개 구간) 데이터만 리플레이합니다.",
+    tags=['iceberg', 'spark', 'test', 'replay'],
 ) as dag:
     
-    # --- Task 1: Staging(Raw Files) to Bronze(Iceberg Table) ---
-    # Kafka Connect가 생성한 10분치 Raw 파일을 Bronze Iceberg 테이블에 추가합니다.
+    # --- Task 정의 (기존과 동일) ---
+    # 각 Task는 Airflow가 자동으로 생성해주는 data_interval 값을 인자로 받습니다.
+    
     staging_to_bronze_task = SparkSubmitOperator(
-        task_id='run_staging_to_bronze_incremental',
+        task_id='run_staging_to_bronze_test',
         application=f"{SPARK_SCRIPTS_DIR}/staging_to_bronze_iceberg.py",
         conn_id='spark_local',
         verbose=True,
         deploy_mode="client",
         packages=",".join(spark_common_packages),
         conf=spark_common_conf,
-        # --- [수정 3] 처리할 10분 시간 구간을 명시적으로 전달 ---
         application_args=[
             '--data-interval-start', '{{ data_interval_start.to_iso8601_string() }}',
             '--data-interval-end', '{{ data_interval_end.to_iso8601_string() }}',
@@ -59,17 +74,14 @@ with DAG(
         ]
     )
 
-    # --- Task 2: Bronze(Iceberg Table) to Silver ---
-    # Bronze Iceberg 테이블에서 10분치 데이터를 읽어 Silver Iceberg 테이블로 변환합니다.
     bronze_to_silver_task = SparkSubmitOperator(
-        task_id='run_bronze_to_silver_incremental',
+        task_id='run_bronze_to_silver_test',
         application=f"{SPARK_SCRIPTS_DIR}/bronze_to_silver_iceberg.py",
         conn_id='spark_local',
         verbose=True,
         deploy_mode="client",
         packages=",".join(spark_common_packages),
         conf=spark_common_conf,
-        # --- [수정 3] 동일한 10분 시간 구간을 전달 ---
         application_args=[
             '--data-interval-start', '{{ data_interval_start.to_iso8601_string() }}',
             '--data-interval-end', '{{ data_interval_end.to_iso8601_string() }}',
@@ -77,17 +89,14 @@ with DAG(
         ]
     )
 
-    # --- Task 3: Silver to Gold Table ---
-    # Silver 테이블에서 10분치 데이터를 읽어 Gold Fact 테이블로 변환합니다.
     silver_to_gold_task = SparkSubmitOperator(
-        task_id='run_silver_to_gold_incremental',
+        task_id='run_silver_to_gold_test',
         application=f"{SPARK_SCRIPTS_DIR}/silver_to_gold_processor.py",
         conn_id='spark_local',
         verbose=True,
         deploy_mode="client",
         packages=",".join(spark_common_packages),
         conf=spark_common_conf,
-        # --- [수정 3] 동일한 10분 시간 구간을 전달 ---
         application_args=[
             '--data-interval-start', '{{ data_interval_start.to_iso8601_string() }}',
             '--data-interval-end', '{{ data_interval_end.to_iso8601_string() }}',
@@ -95,6 +104,5 @@ with DAG(
         ]
     )
 
-    # --- [수정 4] Task 종속성 설정 ---
-    # create_dims_task는 이 DAG에서 제거되었습니다.
+    # --- Task 종속성 설정 ---
     staging_to_bronze_task >> bronze_to_silver_task >> silver_to_gold_task

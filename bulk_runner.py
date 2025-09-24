@@ -78,26 +78,52 @@ def run_spark_job(script_name, args):
     
     subprocess.run(command, check=True)
 
-# --- 메인 실행 로직 ---
+# # --- 메인 실행 로직 ---
+# if __name__ == "__main__":
+#     try:
+#         # --- [수정] staging_to_bronze_iceberg.py 호출 시 --target-date 인자 추가 ---
+#         run_spark_job(
+#             "staging_to_bronze_iceberg.py",
+#             ["--input-file-name", BULK_INPUT_FILE, "--target-date", TARGET_DATE, "--test-mode", "false"]
+#         )
+#         # --- 수정 끝 ---
+        
+#         # 2. Bronze -> Silver (운영 모드로 실행)
+#         run_spark_job("bronze_to_silver_iceberg.py", ["--target-date", TARGET_DATE, "--test-mode", "false"])
+        
+#         # 3. Create Dims (운영 모드로 실행)
+#         run_spark_job("create_dims.py", ["--test-mode", "false"])
+        
+#         # 4. Silver -> Gold (운영 모드로 실행)
+#         run_spark_job("silver_to_gold_processor.py", ["--test-mode", "false"])
+        
+#         print("\n🎉 Bulk data loading completed successfully!")
+        
+#     except Exception as e:
+#         print(f"\n❌ An error occurred: {e}")
+
 if __name__ == "__main__":
     try:
-        # --- [수정] staging_to_bronze_iceberg.py 호출 시 --target-date 인자 추가 ---
+        print("=== 8월 데이터 벌크 처리 시작 ===")
+        
+        # 1. Staging -> Bronze (파일명만 지정, target-date 제거)
         run_spark_job(
             "staging_to_bronze_iceberg.py",
-            ["--input-file-name", BULK_INPUT_FILE, "--target-date", TARGET_DATE, "--test-mode", "false"]
+            ["--input-file-name", BULK_INPUT_FILE, "--test-mode", "false"]
         )
-        # --- 수정 끝 ---
         
-        # 2. Bronze -> Silver (운영 모드로 실행)
-        run_spark_job("bronze_to_silver_iceberg.py", ["--target-date", TARGET_DATE, "--test-mode", "false"])
-        
-        # 3. Create Dims (운영 모드로 실행)
+        # 2. Bronze -> Silver (전체 Bronze 데이터를 실제 날짜별로 파티셔닝)
+        print("Bronze의 모든 데이터를 실제 이벤트 날짜별로 Silver 파티션 생성")
+        run_spark_job("bronze_to_silver_iceberg.py", ["--test-mode", "false"])
+
+        # 3. Create Dims
         run_spark_job("create_dims.py", ["--test-mode", "false"])
         
-        # 4. Silver -> Gold (운영 모드로 실행)
+        # 4. Silver -> Gold (전체 Silver 데이터)
         run_spark_job("silver_to_gold_processor.py", ["--test-mode", "false"])
         
-        print("\n🎉 Bulk data loading completed successfully!")
+        print("\n🎉 8월 벌크 데이터 로딩 완료!")
+        print("이제 9월부터는 Airflow의 증분 DAG를 사용하세요.")
         
     except Exception as e:
-        print(f"\n❌ An error occurred: {e}")
+        print(f"\n❌ 오류 발생: {e}")
