@@ -10,7 +10,7 @@ SPARK_SUBMIT_CMD = "spark-submit"
 # BULK_INPUT_FILE = "dask_events_3m.jsonl"
 BULK_INPUT_FILE = "dask_events_1m.jsonl"
 # 이 벌크 데이터의 논리적 날짜 (Bronze/Silver 파티션에 사용될 날짜)
-# 6~8월 데이터이므로, 8월의 마지막 날로 지정
+# 8월 데이터이므로, 8월의 마지막 날로 지정
 TARGET_DATE = "2025-08-31" 
 
 # Airflow DAG와 동일한 공통 패키지 및 설정

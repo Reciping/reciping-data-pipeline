@@ -1,25 +1,25 @@
-# 합성 사용자 행동 데이터 생성
+# 로그 스키마 기반 유저 행동 데이터 생성
 
 ## 개요
 
-실제 사용자 데이터 없이 Python으로 현실적인 행동 패턴을 시뮬레이션하여 대규모 이벤트 로그를 생성합니다.
+Python으로 현실적인 행동 패턴을 시뮬레이션하여 대규모 이벤트 로그를 생성합니다.
 
 ### 핵심 기술
 
 **Dask 분산처리 프레임워크**
 - 100만 건 이상의 이벤트 로그를 효율적으로 생성
-- 사용자를 2,000명씩 배치로 나누고 4개 워커 프로세스에서 병렬 처리
+- 유저를 2,000명씩 배치로 나누고 4개 워커 프로세스에서 병렬 처리
 - **순차 처리 대비 3-4배 빠른 생성 속도** 달성
 
 ---
 
-## 현실적인 사용자 행동 패턴 시뮬레이션
+## 현실적인 유저 행동 패턴 시뮬레이션
 
 실제 고객 행동과 유사한 데이터를 생성하기 위해 다음 요소들을 구현했습니다:
 
 ### 1. 시간대별 활동 패턴 (Time-of-Day Patterns)
 
-사용자의 하루 일과에 따른 활동 가중치를 적용합니다.
+유저의 하루 일과에 따른 활동 가중치를 적용합니다.
 
 ```python
 hour_weights = {
@@ -57,7 +57,7 @@ weekday_weights = {
 - **주말 (토-일)**: 120-130% 최대 피크 (요리 활동 증가)
 - **주말 보너스**: 이벤트 수 10-20% 추가
 
-### 3. 사용자 세그먼트별 행동 차이 (User Segmentation)
+### 3. 유저 세그먼트별 행동 차이 (User Segmentation)
 
 활동 수준에 따라 3개 그룹으로 분류합니다.
 
@@ -82,11 +82,11 @@ DEMOGRAPHIC_DISTRIBUTION = {
 }
 ```
 
-실제 레시피 서비스 사용자 분포를 반영했습니다.
+실제 레시피 서비스 유저 분포를 반영했습니다.
 
 ### 5. 요리 스타일 페르소나 (Cooking Style Personas)
 
-사용자의 요리 선호도를 5가지 페르소나로 분류합니다.
+유저의 요리 선호도를 5가지 페르소나로 분류합니다.
 
 | 페르소나 | 비율 | 특징 |
 |---------|------|------|
@@ -98,7 +98,7 @@ DEMOGRAPHIC_DISTRIBUTION = {
 
 ### 6. 자연스러운 이벤트 시퀀스 (Event Flow Logic)
 
-`EVENT_SCHEMA` 기반으로 실제 사용자 여정을 구현합니다.
+`EVENT_SCHEMA` 기반으로 실제 유저 여정을 구현합니다.
 
 **이벤트 플로우 예시**:
 ```
@@ -108,7 +108,7 @@ view_page → search_recipe → view_recipe_list → click_recipe → click_book
 **구현 특징**:
 - 각 이벤트 후 다음 이벤트 확률 분포 적용
 - 이벤트 간 시간 간격: 5초 ~ 2분 랜덤 분산
-- 실제 사용자 행동과 유사한 전환율 적용
+- 실제 유저 행동과 유사한 전환율 적용
 
 ### 7. 컨텍스트 기반 행동 연결 (Context-Aware Behavior)
 
@@ -126,15 +126,15 @@ view_page → search_recipe → view_recipe_list → click_recipe → click_book
 **테스트 설정**:
 - **기간**: 2025년 8월 8일 ~ 8월 22일 (2주)
 - **시나리오**: `BEHAVIORAL_TARGETING_MVP_V1`
-- **가설**: 사용자 행동 패턴 기반 광고 타겟팅이 랜덤 광고보다 효과적이다
+- **가설**: 유저 행동 패턴 기반 광고 타겟팅이 랜덤 광고보다 효과적이다
 
 **그룹 구성**:
 - **Control Group** (50%): 기존 랜덤 광고 서빙 (CTR 1.8%)
 - **Treatment Group** (50%): 행동 태그 기반 타겟팅 광고 (CTR 2.2%)
 
-**사용자 할당**:
+**유저 할당**:
 - `user_id`의 MD5 해시값 기반으로 일관되게 할당
-- 동일 사용자는 항상 같은 그룹에 속함
+- 동일 유저는 항상 같은 그룹에 속함
 
 **세그먼트별 차등 목표 CTR**:
 
@@ -188,18 +188,18 @@ profiles_df = pd.read_parquet('s3://reciping-user-event-logs/meta-data/user_prof
 **활용 방법**:
 - 1만개 이상의 실제 레시피 메타데이터 로드
 - 레시피 속성 기반 필터링 (`dish_type`, `ingredient_type`, `method_type` 등)
-- 사용자 페르소나에 맞는 레시피 추천 시뮬레이션
+- 유저 페르소나에 맞는 레시피 추천 시뮬레이션
 - 실제 재료 리스트, 조리 시간, 난이도 등 반영
 
 ---
 
 ## 데이터 생성 전략
 
-### 6~8월: 대규모 배치 데이터 (Bulk Insert)
+### 8월: 대규모 배치 데이터 (Bulk Insert)
 
 **목적**: 과거 데이터 백필 (Backfill)
 
-- **기간**: 2025년 6월 1일 ~ 8월 31일 (3개월)
+- **기간**: 2025년 8월 1일 ~ 8월 31일 (3개월)
 - **방식**: Dask로 대량 JSONL 파일 생성 후 일괄 처리
 - **규모**: 약 **100만 건**의 이벤트
 - **처리**: `bulk_runner.py`로 한 번에 Bronze → Silver → Gold
@@ -387,11 +387,11 @@ print(f"Dask Dashboard: {client.dashboard_link}")
 
 ### 배치 크기 조정
 
-사용자 수에 따라 배치 크기를 조정할 수 있습니다.
+유저 수에 따라 배치 크기를 조정할 수 있습니다.
 
 ```python
 # create_event_logs.py 내부
-BATCH_SIZE = 2_000  # 사용자 수 (기본값)
+BATCH_SIZE = 2_000  # 유저 수 (기본값)
 
 # 메모리가 충분하면 증가
 BATCH_SIZE = 5_000  # 처리 속도 향상
@@ -406,5 +406,5 @@ BATCH_SIZE = 1_000  # 안정성 우선
 
 - **메인 프로젝트 문서**: [../README.md](../README.md)
 - **분석 쿼리**: [../sql_queries/README.md](../sql_queries/README.md)
-- **Dask 공식 문서**: https://docs.dask.org/
-- **Kafka Python 문서**: https://kafka-python.readthedocs.io/
+<!-- - **Dask 공식 문서**: https://docs.dask.org/
+- **Kafka Python 문서**: https://kafka-python.readthedocs.io/ -->
