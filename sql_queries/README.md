@@ -2,7 +2,7 @@
 
 ## 개요
 
-이 디렉토리에는 **20개 이상의 사전 정의된 Trino SQL 쿼리**가 포함되어 있습니다. 각 쿼리는 레시피 서비스의 사용자 행동 데이터를 분석하여 비즈니스 인사이트를 도출하는 데 사용됩니다.
+이 디렉토리에는 **20개 이상의 사전 정의된 Trino SQL 쿼리**가 포함되어 있습니다. <br>각 쿼리는 레시피 서비스의 사용자 행동 데이터를 분석하여 비즈니스 인사이트를 도출하는 데 사용됩니다.
 
 ---
 
@@ -82,5 +82,5 @@ SELECT * FROM user_events_silver LIMIT 10;
 
 - **메인 프로젝트 문서**: [../README.md](../README.md)
 - **데이터 생성**: [../create_data/README.md](../create_data/README.md)
-- **Trino 공식 문서**: https://trino.io/docs/current/
-- **Apache Iceberg 문서**: https://iceberg.apache.org/docs/latest/
+<!-- - **Trino 공식 문서**: https://trino.io/docs/current/
+- **Apache Iceberg 문서**: https://iceberg.apache.org/docs/latest/ -->
