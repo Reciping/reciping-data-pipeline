@@ -262,7 +262,7 @@ EXECUTE rewrite_data_files(
 DIM_USER ──────────────────┐
 DIM_RECIPE ─────────────── FACT_USER_EVENTS ─── DIM_TIME
 DIM_PAGE ──────────────────┘         │
-DIM_EVENT ─────────────────────────── ┘
+DIM_EVENT ───────────────────────────┘
 ```
 
 | 테이블 | 타입 | 행 수 | 설명 |
