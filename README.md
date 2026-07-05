@@ -8,7 +8,7 @@ Apache Iceberg 기반의 Medallion Architecture를 **AWS EC2 Self-Hosted 환경*
 
 | 항목 | 내용 |
 |------|------|
-| **개발 기간** | 2025.05 ~ 2025.10 (5개월) |
+| **개발 기간** | 2025.07 ~ 2025.10 (4개월) |
 | **팀 구성** | 6명 (데이터 엔지니어링 기여도 100%) |
 | **사용 언어** | Python |
 | **핵심 기술** | Kafka · Spark · Airflow · Iceberg · Hive Metastore · Trino · AWS(S3, EC2) |
